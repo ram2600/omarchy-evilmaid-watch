@@ -24,6 +24,13 @@ RestartSec=3
 # sandbox below narrows it. So: stay root, fence root in.
 ProtectSystem=strict
 ReadWritePaths=/var/lib/omarchy-emw
+# /run/user must be writable, which is not obvious and cost a silently missing
+# alert to find. ProtectSystem=strict makes the whole hierarchy read-only bar
+# /dev, /proc and /sys, so without this the watcher cannot stage the photo
+# where the notification server can read it, AND cannot connect() to the
+# session bus socket - connecting to a unix socket needs write access to it.
+# The result was an intruder verdict that alerted nobody.
+ReadWritePaths=/run/user
 # The trigger reads the user's toggle flag out of their home and never writes.
 ProtectHome=read-only
 PrivateTmp=yes

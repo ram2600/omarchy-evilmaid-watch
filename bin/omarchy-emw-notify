@@ -119,9 +119,18 @@ fi
 # text (a USB device's product string), and omarchy-notification-send passes
 # positionals to busctl as typed parameters, so they can never be reparsed as
 # options or as a shell command.
-exec runuser -u "$EMW_USER" -- env \
+# Not exec'd: we want to report whether the toast actually landed. An alert
+# that silently fails to appear is the worst outcome for this tool, because it
+# looks identical to "nothing happened".
+if runuser -u "$EMW_USER" -- env \
   XDG_RUNTIME_DIR="/run/user/$session_uid" \
   DBUS_SESSION_BUS_ADDRESS="unix:path=$BUS_PATH" \
   /usr/bin/omarchy-notification-send \
   "${notify_args[@]}" \
-  "$headline" "$description"
+  "$headline" "$description"; then
+  echo "emw-notify: toast delivered to $EMW_USER" >&2
+else
+  status=$?
+  echo "emw-notify: omarchy-notification-send failed (exit $status)" >&2
+  exit "$status"
+fi
