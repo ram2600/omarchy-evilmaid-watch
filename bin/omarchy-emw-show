@@ -144,7 +144,9 @@ fi
 $open_it || exit 0
 
 # --- Display as the user ---------------------------------------------------
-wayland_display=$(find "/run/user/$viewer_uid" -maxdepth 1 -name 'wayland-[0-9]*' -printf '%f\n' 2>/dev/null | sort | head -1)
+# -type s matters: the runtime dir holds both `wayland-1` (the socket) and
+# `wayland-1.lock` (a regular file), and a name-only match would pick up both.
+wayland_display=$(find "/run/user/$viewer_uid" -maxdepth 1 -type s -name 'wayland-*' -printf '%f\n' 2>/dev/null | sort | head -1)
 if [[ -z $wayland_display ]]; then
   echo "no Wayland session found; open it yourself: $staged" >&2
   exit 0
