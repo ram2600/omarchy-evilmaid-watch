@@ -152,9 +152,21 @@ if [[ -z $wayland_display ]]; then
   exit 0
 fi
 
-setsid runuser -u "$viewer_user" -- env \
+# Foreground, with stderr left intact. Backgrounding this and discarding its
+# output means a viewer that fails to start looks identical to one that
+# worked, which is useless when the whole point is to look at the evidence.
+# sudo blocks until you close the window; that is the desired behaviour for
+# "show me the photo".
+echo "Opening in imv (close the window to return)..."
+
+if ! runuser -u "$viewer_user" -- env \
   XDG_RUNTIME_DIR="/run/user/$viewer_uid" \
   WAYLAND_DISPLAY="$wayland_display" \
-  imv "$staged" >/dev/null 2>&1 &
-
-echo "Opened in imv."
+  XDG_SESSION_TYPE=wayland \
+  imv "$staged"; then
+  echo >&2
+  echo "imv did not start. The photo is staged and readable by you at:" >&2
+  echo "  $staged" >&2
+  echo "Open it yourself with:  imv $staged" >&2
+  exit 0
+fi
