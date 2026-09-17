@@ -1,0 +1,300 @@
+#!/bin/bash
+
+# omarchy:summary=Configure EvilMaid Watch remote alerts (Telegram or ntfy)
+# omarchy:args=[telegram|ntfy|channel|show|test]
+# omarchy:examples=omarchy-emw-setup telegram | omarchy-emw-setup test
+# omarchy:requires-sudo=true
+
+# Interactive credential setup.
+#
+# Secrets are read with `read -rs` and written straight to the 0600 config.
+# They are never passed as arguments, never echoed, and never reach your shell
+# history - which is the whole reason this exists instead of a documented sed
+# one-liner. Every curl call is driven from stdin via `-K -` for the same
+# reason: a token in argv is readable from /proc by any process on the box.
+
+set -euo pipefail
+
+readonly LIB_DIR=${OMARCHY_EMW_LIB:-/usr/local/lib/omarchy-emw}
+# shellcheck source=../lib/emw-common.sh
+source "$LIB_DIR/emw-common.sh"
+
+readonly CONFIG_FILE=/etc/omarchy/emw.conf
+
+if ((EUID != 0)); then
+  echo "omarchy-emw-setup needs root to write $CONFIG_FILE: sudo $0 $*" >&2
+  exit 1
+fi
+
+[[ -f $CONFIG_FILE ]] || {
+  echo "no config at $CONFIG_FILE - run install.sh first" >&2
+  exit 69
+}
+
+# conf_set <KEY> <value>
+# Rewrites one key in place via a 0600 temp file in the same directory, so the
+# config is replaced atomically and a crash mid-write cannot leave a
+# world-readable or truncated file holding a credential.
+conf_set() {
+  local key=$1 value=$2
+  KEY="$key" VALUE="$value" CONF="$CONFIG_FILE" python3 - <<'PY'
+import os, re, tempfile
+
+key, value, path = os.environ["KEY"], os.environ["VALUE"], os.environ["CONF"]
+with open(path) as fh:
+    lines = fh.readlines()
+
+pattern = re.compile(r'^\s*' + re.escape(key) + r'\s*=')
+line = f"{key}={value}\n"
+for i, existing in enumerate(lines):
+    if pattern.match(existing):
+        lines[i] = line
+        break
+else:
+    lines.append(line)
+
+directory = os.path.dirname(path)
+fd, tmp = tempfile.mkstemp(dir=directory)
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.writelines(lines)
+    os.chown(tmp, 0, 0)
+    os.replace(tmp, path)
+except BaseException:
+    os.unlink(tmp)
+    raise
+PY
+}
+
+# curl driven entirely from stdin, so no URL containing a token is ever visible
+# in the process table.
+api_call() {
+  local url=$1
+  printf 'url = "%s"\nsilent\nshow-error\nfail-with-body\nmax-time = 20\nconnect-timeout = 10\n' "$url" |
+    curl -K -
+}
+
+# --- Telegram --------------------------------------------------------------
+setup_telegram() {
+  cat <<'EOF'
+
+Telegram setup
+--------------
+In Telegram:
+
+  1. Message @BotFather and send:  /newbot
+  2. Give it a name and a username ending in "bot".
+  3. BotFather replies with a token like 123456789:AAE_xxxxxxxxxxxxxxxxxxxx
+
+EOF
+
+  local token=""
+  read -rsp "Paste the bot token (input hidden): " token
+  echo
+  [[ -n $token ]] || {
+    echo "no token given; aborting" >&2
+    exit 1
+  }
+
+  echo "Verifying token..."
+  local me
+  me=$(api_call "https://api.telegram.org/bot$token/getMe") || {
+    echo "could not reach the Telegram API" >&2
+    exit 75
+  }
+
+  if [[ $(jq -r '.ok // false' <<<"$me") != "true" ]]; then
+    echo "Telegram rejected that token: $(jq -r '.description // "unknown error"' <<<"$me")" >&2
+    exit 1
+  fi
+
+  local botname
+  botname=$(jq -r '.result.username' <<<"$me")
+  echo "  OK - bot is @$botname"
+
+  cat <<EOF
+
+Now open Telegram and send any message to @$botname (for example /start).
+A bot cannot message you first - it can only reply to a chat that already
+exists, so this step is required, not optional.
+
+EOF
+  read -rp "Press Enter once you have messaged the bot... " _
+
+  echo "Looking for your chat..."
+  local updates chat_id chat_name
+  updates=$(api_call "https://api.telegram.org/bot$token/getUpdates") || {
+    echo "could not reach the Telegram API" >&2
+    exit 75
+  }
+
+  chat_id=$(jq -r '[.result[].message.chat.id] | last // empty' <<<"$updates")
+  chat_name=$(jq -r '[.result[].message.chat | (.username // .first_name // "")] | last // empty' <<<"$updates")
+
+  if [[ -z $chat_id ]]; then
+    cat <<EOF >&2
+
+No messages found. Telegram only returns recent updates, so this happens if
+the message was not actually delivered, or was sent before the bot existed.
+Send another message to @$botname and run this again.
+EOF
+    exit 1
+  fi
+
+  echo "  found chat $chat_id${chat_name:+ ($chat_name)}"
+
+  conf_set TELEGRAM_BOT_TOKEN "$token"
+  conf_set TELEGRAM_CHAT_ID "$chat_id"
+
+  # Preserve an existing ntfy setup rather than silently disabling it.
+  local current
+  current=$(conf_get ALERT_CHANNEL none)
+  if [[ $current == "ntfy" || $current == "both" ]]; then
+    echo
+    read -rp "ntfy is already configured. Keep it as well? [Y/n] " keep
+    if [[ ${keep,,} == "n" ]]; then
+      conf_set ALERT_CHANNEL telegram
+    else
+      conf_set ALERT_CHANNEL both
+    fi
+  else
+    conf_set ALERT_CHANNEL telegram
+  fi
+
+  echo
+  echo "Saved to $CONFIG_FILE (0600 root:root). ALERT_CHANNEL=$(conf_get ALERT_CHANNEL none)"
+  echo
+  read -rp "Send a test alert now? [Y/n] " dotest
+  [[ ${dotest,,} == "n" ]] || send_test
+}
+
+# --- ntfy ------------------------------------------------------------------
+setup_ntfy() {
+  cat <<'EOF'
+
+ntfy setup
+----------
+ntfy needs no account: a topic name is the only identifier. Treat it like a
+password - on the public server, anyone who knows the topic can read your
+alerts. Use a long random topic, or a private server with a token.
+
+EOF
+
+  local server topic token current
+  read -rp "Server [https://ntfy.sh]: " server
+  server=${server:-https://ntfy.sh}
+
+  read -rp "Topic (blank to generate a random one): " topic
+  if [[ -z $topic ]]; then
+    topic="emw-$(head -c 12 /dev/urandom | base32 | tr -d '=' | tr '[:upper:]' '[:lower:]')"
+    echo "  generated topic: $topic"
+  fi
+
+  read -rsp "Access token, if your server needs one (input hidden, blank for none): " token
+  echo
+
+  conf_set NTFY_URL "$server"
+  conf_set NTFY_TOPIC "$topic"
+  conf_set NTFY_TOKEN "$token"
+
+  current=$(conf_get ALERT_CHANNEL none)
+  if [[ $current == "telegram" || $current == "both" ]]; then
+    read -rp "Telegram is already configured. Keep it as well? [Y/n] " keep
+    if [[ ${keep,,} == "n" ]]; then
+      conf_set ALERT_CHANNEL ntfy
+    else
+      conf_set ALERT_CHANNEL both
+    fi
+  else
+    conf_set ALERT_CHANNEL ntfy
+  fi
+
+  echo
+  echo "Subscribe at: ${server%/}/$topic"
+  echo "Saved to $CONFIG_FILE. ALERT_CHANNEL=$(conf_get ALERT_CHANNEL none)"
+  echo
+  read -rp "Send a test alert now? [Y/n] " dotest
+  [[ ${dotest,,} == "n" ]] || send_test
+}
+
+# --- Channel / show / test -------------------------------------------------
+setup_channel() {
+  echo "Current: ALERT_CHANNEL=$(conf_get ALERT_CHANNEL none)"
+  echo "Options: none | telegram | ntfy | both"
+  local choice
+  read -rp "Set to: " choice
+  case $choice in
+  none | telegram | ntfy | both)
+    conf_set ALERT_CHANNEL "$choice"
+    echo "ALERT_CHANNEL=$choice"
+    ;;
+  *)
+    echo "unrecognised channel: $choice" >&2
+    exit 64
+    ;;
+  esac
+}
+
+show_config() {
+  local tok ntok
+  tok=$(conf_get TELEGRAM_BOT_TOKEN "")
+  ntok=$(conf_get NTFY_TOKEN "")
+  cat <<EOF
+ALERT_CHANNEL       $(conf_get ALERT_CHANNEL none)
+
+TELEGRAM_BOT_TOKEN  ${tok:+configured (${#tok} chars)}${tok:-unset}
+TELEGRAM_CHAT_ID    $(conf_get TELEGRAM_CHAT_ID unset)
+
+NTFY_URL            $(conf_get NTFY_URL https://ntfy.sh)
+NTFY_TOPIC          $(conf_get NTFY_TOPIC unset)
+NTFY_TOKEN          ${ntok:+configured}${ntok:-unset}
+EOF
+}
+
+send_test() {
+  # Build a throwaway incident so the real send path is exercised end to end,
+  # rather than testing a shortcut that production never uses.
+  local evidence_dir dir
+  evidence_dir=$(conf_get EVIDENCE_DIR /var/lib/omarchy-emw)
+  dir="$evidence_dir/incidents/setup-test-$$"
+  mkdir -p "$dir"
+  chmod 700 "$dir"
+  printf 'manual\n' >"$dir/sources"
+  jq -n '{verdict: "test"}' >"$dir/verdict.json"
+
+  # Attach the most recent real photo if there is one, so the image path is
+  # covered too. No capture here: a setup test should not light the LED.
+  local recent
+  recent=$(find "$evidence_dir/incidents" -name photo.jpg -type f -printf '%T@ %p\n' 2>/dev/null |
+    sort -rn | head -1 | cut -d' ' -f2-)
+  [[ -n $recent ]] && cp "$recent" "$dir/photo.jpg"
+
+  echo "Sending test alert..."
+  if omarchy-emw-alert "$dir" --verdict test; then
+    echo "Sent. Check your device."
+  else
+    echo "Send failed - it has been spooled and will retry." >&2
+  fi
+  rm -rf "$dir"
+}
+
+case ${1:-} in
+telegram) setup_telegram ;;
+ntfy) setup_ntfy ;;
+channel) setup_channel ;;
+show) show_config ;;
+test) send_test ;;
+*)
+  cat <<'EOF'
+usage: omarchy-emw-setup <command>
+
+  telegram   Configure Telegram alerts (bot token + chat id)
+  ntfy       Configure ntfy alerts (server + topic)
+  channel    Choose which backends are active: none|telegram|ntfy|both
+  show       Show current alert settings, with secrets redacted
+  test       Send a test alert through the configured backends
+EOF
+  exit 64
+  ;;
+esac
