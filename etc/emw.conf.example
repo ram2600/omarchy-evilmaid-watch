@@ -1,6 +1,6 @@
 # Omarchy DoNotDisturb configuration.
 #
-# Installed to /etc/omarchy/sentry.conf as 0600 root:root - it holds API tokens.
+# Installed to /etc/omarchy/emw.conf as 0600 root:root - it holds API tokens.
 # This file is sourced by bash, so values are shell syntax: quote anything
 # with spaces, and do not add trailing comments on a value line.
 
@@ -9,7 +9,7 @@ ENABLED=true
 
 # The desktop user to notify and whose lock state decides the verdict.
 # Set automatically by install.sh; change it if you install for someone else.
-SENTRY_USER=
+EMW_USER=
 
 # Which triggers are live. Comma-separated subset of: lid,resume,faillock,usb
 TRIGGERS=lid,resume,faillock,usb
@@ -63,7 +63,7 @@ NTFY_TOKEN=
 DESKTOP_NOTIFY=true
 
 # --- Storage --------------------------------------------------------------
-EVIDENCE_DIR=/var/lib/omarchy-sentry
+EVIDENCE_DIR=/var/lib/omarchy-emw
 RETAIN_DAYS=30
 
 # Collapse triggers that arrive within this window into one incident. Opening
@@ -73,9 +73,9 @@ DEBOUNCE_SECONDS=20
 
 # --- Hooks ----------------------------------------------------------------
 # Every executable here runs as root on an intruder verdict, with
-# SENTRY_INCIDENT_DIR, SENTRY_SOURCE and SENTRY_VERDICT in the environment.
+# EMW_INCIDENT_DIR, EMW_SOURCE and EMW_VERDICT in the environment.
 # Must be root-owned and not group/world-writable or it will be skipped:
 # this directory runs code as root, so a user-writable hook would be a
 # straight privilege escalation.
-HOOK_DIR=/etc/omarchy/sentry-hooks.d
+HOOK_DIR=/etc/omarchy/emw-hooks.d
 HOOK_TIMEOUT=30

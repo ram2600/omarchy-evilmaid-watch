@@ -1,22 +1,22 @@
 #!/bin/bash
 
-# Install Omarchy Sentry. Idempotent: safe to re-run after an edit.
+# Install Omarchy EvilMaid Watch. Idempotent: safe to re-run after an edit.
 #
 # Deploys to /usr/local rather than into the Omarchy checkout, so `omarchy
 # update` cannot clobber it and this stays a separate, publishable project.
 # Note that /usr/share/omarchy/bin/omarchy only scans its OWN directory for
-# subcommands, so `omarchy sentry ...` will NOT route until these are copied
+# subcommands, so `omarchy emw ...` will NOT route until these are copied
 # into the Omarchy tree. Call the binaries directly for now - they are on PATH.
 
 set -euo pipefail
 
 readonly REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 readonly BIN_DIR=/usr/local/bin
-readonly LIB_DIR=/usr/local/lib/omarchy-sentry
+readonly LIB_DIR=/usr/local/lib/omarchy-emw
 readonly CONF_DIR=/etc/omarchy
-readonly CONF_FILE="$CONF_DIR/sentry.conf"
-readonly HOOK_DIR="$CONF_DIR/sentry-hooks.d"
-readonly STATE_DIR=/var/lib/omarchy-sentry
+readonly CONF_FILE="$CONF_DIR/emw.conf"
+readonly HOOK_DIR="$CONF_DIR/emw-hooks.d"
+readonly STATE_DIR=/var/lib/omarchy-emw
 readonly UNIT_DIR=/etc/systemd/system
 
 if ((EUID != 0)); then
@@ -44,11 +44,11 @@ if [[ -z $target_user ]]; then
   exit 1
 fi
 
-echo -e "\nInstalling Omarchy Sentry for user '$target_user'..."
+echo -e "\nInstalling Omarchy EvilMaid Watch for user '$target_user'..."
 
 # --- Programs --------------------------------------------------------------
 install -d -m 0755 "$LIB_DIR"
-install -m 0755 "$REPO_DIR"/bin/omarchy-sentry-* "$BIN_DIR/"
+install -m 0755 "$REPO_DIR"/bin/omarchy-emw-* "$BIN_DIR/"
 install -m 0644 "$REPO_DIR"/lib/*.py "$LIB_DIR/"
 
 # --- Config ----------------------------------------------------------------
@@ -56,9 +56,9 @@ install -d -m 0755 "$CONF_DIR"
 if [[ -f $CONF_FILE ]]; then
   echo "  keeping existing $CONF_FILE"
 else
-  install -m 0600 -o root -g root "$REPO_DIR/etc/sentry.conf.example" "$CONF_FILE"
+  install -m 0600 -o root -g root "$REPO_DIR/etc/emw.conf.example" "$CONF_FILE"
   # Bake in the resolved user so the daemon never has to guess.
-  sed -i "s/^SENTRY_USER=.*/SENTRY_USER=$target_user/" "$CONF_FILE"
+  sed -i "s/^EMW_USER=.*/EMW_USER=$target_user/" "$CONF_FILE"
   echo "  wrote $CONF_FILE (0600 root:root)"
 fi
 
@@ -92,18 +92,18 @@ else
 fi
 
 # --- Service ---------------------------------------------------------------
-install -m 0644 "$REPO_DIR/systemd/omarchy-sentry.service" "$UNIT_DIR/"
+install -m 0644 "$REPO_DIR/systemd/omarchy-emw.service" "$UNIT_DIR/"
 systemctl daemon-reload
-systemctl enable --now omarchy-sentry.service
+systemctl enable --now omarchy-emw.service
 
 echo -e "\nInstalled. Status:"
-systemctl --no-pager --lines=0 status omarchy-sentry.service || true
+systemctl --no-pager --lines=0 status omarchy-emw.service || true
 
 cat <<EOF
 
 Next:
-  journalctl -u omarchy-sentry -f     # watch it
-  sudo tail -f $EVENTS_LOG            # watch the log
+  journalctl -u omarchy-emw -f     # watch it
+  sudo tail -f $EVENTS_LOG          # watch the log
 
 Close and reopen the lid to produce an event.
 

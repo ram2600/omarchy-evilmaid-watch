@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-readonly LIB_DIR=${OMARCHY_SENTRY_LIB:-/usr/local/lib/omarchy-sentry}
-readonly TRIGGER=${OMARCHY_SENTRY_TRIGGER:-/usr/local/bin/omarchy-sentry-trigger}
+readonly LIB_DIR=${OMARCHY_EMW_LIB:-/usr/local/lib/omarchy-emw}
+readonly TRIGGER=${OMARCHY_EMW_TRIGGER:-/usr/local/bin/omarchy-emw-trigger}
 
 exec python3 "$LIB_DIR/lidwatch.py" "$TRIGGER"

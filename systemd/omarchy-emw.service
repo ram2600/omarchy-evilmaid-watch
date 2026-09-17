@@ -1,5 +1,5 @@
 [Unit]
-Description=Omarchy Sentry - physical-access (evil-maid) detection
+Description=Omarchy EvilMaid Watch - physical-access (evil-maid) detection
 Documentation=https://github.com/objective-see/DoNotDisturb
 # No ordering against udev is needed: the watcher discovers the lid device by
 # capability and rescans with backoff if it is not there yet, so starting early
@@ -10,11 +10,11 @@ After=local-fs.target systemd-logind.service
 # Two reasons: %h expands to root's home for a system service, not the desktop
 # user's, so the gate would test a path that never exists; and Condition* is
 # evaluated only at unit start, so arming would need a restart to take effect.
-# omarchy-sentry-trigger checks the toggle per event instead.
+# omarchy-emw-trigger checks the toggle per event instead.
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/omarchy-sentry-watch
+ExecStart=/usr/local/bin/omarchy-emw-watch
 Restart=always
 RestartSec=3
 
@@ -23,7 +23,7 @@ RestartSec=3
 # groups to run unprivileged would widen the attack surface more than the
 # sandbox below narrows it. So: stay root, fence root in.
 ProtectSystem=strict
-ReadWritePaths=/var/lib/omarchy-sentry
+ReadWritePaths=/var/lib/omarchy-emw
 # The trigger reads the user's toggle flag out of their home and never writes.
 ProtectHome=read-only
 PrivateTmp=yes
@@ -35,7 +35,7 @@ LockPersonality=yes
 
 # StateDirectory enforces 0700 root:root on every start, so a loosened
 # evidence directory is repaired rather than silently tolerated.
-StateDirectory=omarchy-sentry
+StateDirectory=omarchy-emw
 StateDirectoryMode=0700
 
 # The trigger forks the capture, the notification bridge and the hooks; keep

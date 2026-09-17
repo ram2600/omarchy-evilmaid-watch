@@ -2,7 +2,7 @@
 
 # omarchy:summary=Handle a physical-access incident: capture evidence, classify it, alert
 # omarchy:args=<lid|resume|faillock|usb|manual>
-# omarchy:examples=omarchy-sentry-trigger lid
+# omarchy:examples=omarchy-emw-trigger lid
 # omarchy:hidden=true
 
 # Runs as root, invoked by the lid watcher, the resume unit, the faillock
@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-readonly CONFIG_FILE=/etc/omarchy/sentry.conf
+readonly CONFIG_FILE=/etc/omarchy/emw.conf
 
 source_name=${1:-manual}
 
@@ -30,10 +30,10 @@ esac
 # Every key has a default here so a truncated or missing config degrades to
 # safe local-only behaviour rather than failing closed and losing the event.
 ENABLED=true
-SENTRY_USER=""
+EMW_USER=""
 TRIGGERS=lid,resume,faillock,usb
 PASSIVE_MODE=false
-EVIDENCE_DIR=/var/lib/omarchy-sentry
+EVIDENCE_DIR=/var/lib/omarchy-emw
 DEBOUNCE_SECONDS=20
 
 if [[ -r $CONFIG_FILE ]]; then
@@ -41,7 +41,7 @@ if [[ -r $CONFIG_FILE ]]; then
   source "$CONFIG_FILE"
 fi
 
-log_journal() { echo "sentry[$source_name]: $*" >&2; }
+log_journal() { echo "emw[$source_name]: $*" >&2; }
 
 if [[ $ENABLED != "true" ]]; then
   log_journal "disabled in config, ignoring"
@@ -54,16 +54,16 @@ if [[ ,$TRIGGERS, != *,$source_name,* && $source_name != "manual" ]]; then
 fi
 
 # --- Armed? ----------------------------------------------------------------
-# The toggle lives in the desktop user's Omarchy state dir so `omarchy-sentry
+# The toggle lives in the desktop user's Omarchy state dir so `omarchy-emw
 # disarm` needs no root. We deliberately do NOT gate the systemd unit on this
 # file: a system service expands %h to root's home, not the user's, and
 # checking here means arming takes effect instantly with no restart.
 user_home=""
-if [[ -n $SENTRY_USER ]]; then
-  user_home=$(getent passwd "$SENTRY_USER" | cut -d: -f6 || true)
+if [[ -n $EMW_USER ]]; then
+  user_home=$(getent passwd "$EMW_USER" | cut -d: -f6 || true)
 fi
 
-if [[ -n $user_home && -f "$user_home/.local/state/omarchy/toggles/sentry-off" ]]; then
+if [[ -n $user_home && -f "$user_home/.local/state/omarchy/toggles/emw-off" ]]; then
   log_journal "disarmed by user toggle, ignoring"
   exit 0
 fi

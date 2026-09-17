@@ -119,7 +119,7 @@ def drain(fd):
 
 
 def main():
-    trigger = sys.argv[1] if len(sys.argv) > 1 else "/usr/local/bin/omarchy-sentry-trigger"
+    trigger = sys.argv[1] if len(sys.argv) > 1 else "/usr/local/bin/omarchy-emw-trigger"
 
     poller = select.poll()
     watched = {}
