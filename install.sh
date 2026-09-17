@@ -95,7 +95,13 @@ fi
 # --- Service ---------------------------------------------------------------
 install -m 0644 "$REPO_DIR/systemd/omarchy-emw.service" "$UNIT_DIR/"
 systemctl daemon-reload
-systemctl enable --now omarchy-emw.service
+systemctl enable omarchy-emw.service
+# restart, not `enable --now`: --now only *starts* a stopped unit, so on a
+# re-install the long-running watcher would keep executing the previous
+# version of lidwatch.py. The trigger is re-exec'd per event and so picks up
+# changes immediately, which makes this mismatch easy to miss - the new
+# trigger runs while the old watcher feeds it.
+systemctl restart omarchy-emw.service
 
 echo -e "\nInstalled. Status:"
 systemctl --no-pager --lines=0 status omarchy-emw.service || true
