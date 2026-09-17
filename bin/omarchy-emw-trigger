@@ -179,7 +179,8 @@ no)
     verdict=intruder
     deadline=$(($(date +%s) + grace))
     while (($(date +%s) < deadline)); do
-      if [[ $(emw_locked "$session_id") == "no" ]]; then
+      # tries=1: this loop is itself the retry, every 2s for the full window.
+      if [[ $(emw_locked "$session_id" 1) == "no" ]]; then
         verdict=benign
         break
       fi

@@ -77,8 +77,12 @@ emw_session_id() {
 #
 # Callers must treat "unknown" as locked: failing toward running the grace
 # period and possibly alerting is the safe direction for a security tool.
+# The second argument caps the probe attempts. The initial sample after a lid
+# opens wants a few, because the shell may still be returning from suspend. The
+# grace loop wants exactly one: it already re-probes every 2s for a minute, so
+# retrying inside each poll multiplies the work for no extra information.
 emw_locked() {
-  local sid=$1 user uid attempt answer hint
+  local sid=$1 tries=${2:-4} user uid attempt answer hint
 
   user=$(conf_get EMW_USER "")
   uid=""
@@ -95,7 +99,7 @@ emw_locked() {
     # Giving up fast is safe because "unknown" counts as locked, so the grace
     # loop runs anyway and re-probes every 2s for the full window. That loop is
     # where a shell recovering from resume gets the time it needs.
-    for attempt in 1 2 3 4; do
+    for ((attempt = 0; attempt < tries; attempt++)); do
       answer=$(emw_shell_as_user "$user" "$uid" lock isLocked 2>/dev/null || true)
       case $answer in
       true)
@@ -107,7 +111,7 @@ emw_locked() {
         return 0
         ;;
       esac
-      sleep 0.25
+      ((attempt + 1 < tries)) && sleep 0.25
     done
   fi
 
@@ -138,12 +142,24 @@ emw_locked() {
 # the shell through the Wayland socket in XDG_RUNTIME_DIR, so that variable has
 # to be set even when we are already the right user.
 emw_shell_as_user() {
-  local user=$1 uid=$2
+  local user=$1 uid=$2 gid
   shift 2
-  if ((EUID == 0)); then
-    runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
-      omarchy-shell "$@"
-  else
+
+  if ((EUID != 0)); then
     XDG_RUNTIME_DIR="/run/user/$uid" omarchy-shell "$@"
+    return
   fi
+
+  # setpriv, not runuser. runuser opens a full PAM session for every call, and
+  # the grace loop polls for a minute - one incident produced 722 journal lines
+  # of pam_unix/pam_lastlog2 chatter, drowning the security log it is supposed
+  # to be writing. setpriv only changes credentials: no PAM, no session, no log
+  # entry. runuser stays as a fallback in case setpriv is unavailable.
+  gid=$(id -g "$user" 2>/dev/null || echo "$uid")
+  if setpriv --reuid="$uid" --regid="$gid" --init-groups -- \
+    env XDG_RUNTIME_DIR="/run/user/$uid" omarchy-shell "$@" 2>/dev/null; then
+    return 0
+  fi
+
+  runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" omarchy-shell "$@"
 }
