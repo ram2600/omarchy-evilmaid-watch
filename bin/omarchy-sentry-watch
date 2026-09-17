@@ -1,0 +1,15 @@
+#!/bin/bash
+
+# omarchy:summary=Watch the laptop lid switch and fire DoNotDisturb incidents
+# omarchy:hidden=true
+
+# Thin wrapper so the daemon carries Omarchy command metadata while the event
+# loop itself stays in Python - parsing struct input_event in bash would mean
+# shelling out per event to a tool (evtest) that is not installed here.
+
+set -euo pipefail
+
+readonly LIB_DIR=${OMARCHY_SENTRY_LIB:-/usr/local/lib/omarchy-sentry}
+readonly TRIGGER=${OMARCHY_SENTRY_TRIGGER:-/usr/local/bin/omarchy-sentry-trigger}
+
+exec python3 "$LIB_DIR/lidwatch.py" "$TRIGGER"

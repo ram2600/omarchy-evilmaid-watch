@@ -1,0 +1,81 @@
+# Omarchy DoNotDisturb configuration.
+#
+# Installed to /etc/omarchy/sentry.conf as 0600 root:root - it holds API tokens.
+# This file is sourced by bash, so values are shell syntax: quote anything
+# with spaces, and do not add trailing comments on a value line.
+
+# Master switch. Set false to stop reacting to triggers entirely.
+ENABLED=true
+
+# The desktop user to notify and whose lock state decides the verdict.
+# Set automatically by install.sh; change it if you install for someone else.
+SENTRY_USER=
+
+# Which triggers are live. Comma-separated subset of: lid,resume,faillock,usb
+TRIGGERS=lid,resume,faillock,usb
+
+# Log the incident locally but send nothing and run no hooks.
+# Upstream DoNotDisturb calls this passiveMode.
+PASSIVE_MODE=false
+
+# --- Trusted unlock -------------------------------------------------------
+# Evidence is always captured immediately. Then we wait this long for someone
+# to unlock the session. An unlock in time means it was you: the incident is
+# logged as benign and no remote alert goes out. This replaces upstream's
+# touchIDMode, since Touch ID is not available under Asahi.
+TRUSTED_UNLOCK=true
+GRACE_SECONDS=60
+
+# If the session was not locked when the trigger fired, a grace period cannot
+# tell you from an intruder. Default assumes an unlocked machine was one you
+# were actively using.
+ALERT_WHEN_UNLOCKED=false
+
+# --- Capture --------------------------------------------------------------
+CAPTURE_PHOTO=true
+
+# auto = pick the first /dev/video* that is a real capture device.
+# Never hardcode /dev/video1: /dev/video0 on this machine is "avd", an Apple
+# video decoder, and capturing from it will not produce a photo.
+CAMERA_DEVICE=auto
+PHOTO_RESOLUTION=1280x720
+
+# Frames to discard before keeping one. The first frames are black until
+# auto-exposure settles.
+PHOTO_WARMUP_FRAMES=15
+
+# NOTE: the camera LED is wired to camera power on Apple hardware and WILL
+# light during capture. This is intended - it is the same deterrent behaviour
+# as macOS. It cannot be disabled in software.
+
+# --- Alerting -------------------------------------------------------------
+# none | telegram | ntfy | both
+ALERT_CHANNEL=none
+
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+
+NTFY_URL=https://ntfy.sh
+NTFY_TOPIC=
+NTFY_TOKEN=
+
+# Desktop toast on the local session.
+DESKTOP_NOTIFY=true
+
+# --- Storage --------------------------------------------------------------
+EVIDENCE_DIR=/var/lib/omarchy-sentry
+RETAIN_DAYS=30
+
+# Collapse triggers that arrive within this window into one incident. Opening
+# the lid after a suspend fires both the lid watcher and the resume unit, so
+# this is required, not an optimisation.
+DEBOUNCE_SECONDS=20
+
+# --- Hooks ----------------------------------------------------------------
+# Every executable here runs as root on an intruder verdict, with
+# SENTRY_INCIDENT_DIR, SENTRY_SOURCE and SENTRY_VERDICT in the environment.
+# Must be root-owned and not group/world-writable or it will be skipped:
+# this directory runs code as root, so a user-writable hook would be a
+# straight privilege escalation.
+HOOK_DIR=/etc/omarchy/sentry-hooks.d
+HOOK_TIMEOUT=30

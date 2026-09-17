@@ -1,0 +1,114 @@
+#!/bin/bash
+
+# omarchy:summary=Deliver a sentry notification into the desktop session from root
+# omarchy:args=<headline> [description] [--image <path>] [--urgency <low|normal|critical>]
+# omarchy:examples=omarchy-sentry-notify "Lid opened" "While locked" --urgency critical
+# omarchy:hidden=true
+# omarchy:requires-sudo=true
+
+# Root -> user session bridge.
+#
+# omarchy-notification-send talks to the notification daemon over the *session*
+# bus (`busctl --user`). A system service runs with no session bus at all, so
+# calling it directly from the sentry daemon fails silently. Nothing in Omarchy
+# bridges that gap today, so this does: resolve the desktop session, then drop
+# to that user with the right bus address in the environment.
+#
+# Delivery is best effort. The incident is already on disk and the remote alert
+# is already queued by the time we get here, so a missing toast must never fail
+# the caller - exit 0 on every "no session" path.
+
+set -euo pipefail
+
+readonly CONFIG_FILE=/etc/omarchy/sentry.conf
+
+# nf-md-shield_lock, escaped so this file reads without a Nerd Font installed.
+readonly SENTRY_GLYPH=$'\U000f099d'
+
+urgency=critical
+image=""
+positional=()
+
+while (($# > 0)); do
+  case $1 in
+  --image)
+    image=${2:-}
+    shift 2
+    ;;
+  --urgency)
+    urgency=${2:-critical}
+    shift 2
+    ;;
+  *)
+    positional+=("$1")
+    shift
+    ;;
+  esac
+done
+
+if ((${#positional[@]} == 0)); then
+  echo "usage: omarchy-sentry-notify <headline> [description] [--image <path>] [--urgency <u>]" >&2
+  exit 64
+fi
+
+headline=${positional[0]}
+description=${positional[1]:-}
+
+# --- Resolve the desktop user ---------------------------------------------
+SENTRY_USER=""
+if [[ -r $CONFIG_FILE ]]; then
+  # Read only the one key we need rather than sourcing the whole config: this
+  # runs as root, and sourcing is arbitrary code execution if the file is ever
+  # writable by anyone else.
+  SENTRY_USER=$(sed -n 's/^[[:space:]]*SENTRY_USER=\([^#]*\).*/\1/p' "$CONFIG_FILE" | tr -d '"'\''[:space:]' | head -1)
+fi
+
+# --- Find that user's graphical session ------------------------------------
+# A user can have several sessions (here: one seat0 tty session and one
+# "manager" session). Only a seated, user-class session has a notification
+# daemon behind it, so match on Class and Seat rather than taking the first row.
+session_uid=""
+while read -r sid _rest; do
+  [[ -n $sid ]] || continue
+  props=$(loginctl show-session "$sid" -p Name -p Class -p Seat -p State 2>/dev/null || true)
+  [[ $props == *"Class=user"* ]] || continue
+  [[ $props == *"Seat=seat"* ]] || continue
+  name=${props#*Name=}
+  name=${name%%$'\n'*}
+  if [[ -z $SENTRY_USER || $name == "$SENTRY_USER" ]]; then
+    SENTRY_USER=$name
+    session_uid=$(id -u "$name" 2>/dev/null || true)
+    break
+  fi
+done < <(loginctl list-sessions --no-legend 2>/dev/null || true)
+
+if [[ -z $SENTRY_USER || -z $session_uid ]]; then
+  echo "sentry-notify: no graphical session; skipping toast" >&2
+  exit 0
+fi
+
+readonly BUS_PATH="/run/user/$session_uid/bus"
+if [[ ! -S $BUS_PATH ]]; then
+  echo "sentry-notify: no session bus at $BUS_PATH; skipping toast" >&2
+  exit 0
+fi
+
+# --- Deliver ---------------------------------------------------------------
+# Keeping the DEFAULT app name (omarchy-action) is deliberate: per
+# docs/notifications.md only two senders punch through the user's own
+# do-not-disturb, and omarchy-action is one of them. A tamper alert that the
+# user's DND swallows is worse than no alert, because they would trust it.
+# omarchy-crash-watch relies on exactly this for the same reason.
+notify_args=(--urgency "$urgency" --glyph "$SENTRY_GLYPH")
+[[ -n $image && -f $image ]] && notify_args+=(--image "$image")
+
+# Headline and description stay positional. They can contain attacker-derived
+# text (a USB device's product string), and omarchy-notification-send passes
+# positionals to busctl as typed parameters, so they can never be reparsed as
+# options or as a shell command.
+exec runuser -u "$SENTRY_USER" -- env \
+  XDG_RUNTIME_DIR="/run/user/$session_uid" \
+  DBUS_SESSION_BUS_ADDRESS="unix:path=$BUS_PATH" \
+  /usr/bin/omarchy-notification-send \
+  "${notify_args[@]}" \
+  "$headline" "$description"

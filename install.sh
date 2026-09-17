@@ -1,0 +1,111 @@
+#!/bin/bash
+
+# Install Omarchy Sentry. Idempotent: safe to re-run after an edit.
+#
+# Deploys to /usr/local rather than into the Omarchy checkout, so `omarchy
+# update` cannot clobber it and this stays a separate, publishable project.
+# Note that /usr/share/omarchy/bin/omarchy only scans its OWN directory for
+# subcommands, so `omarchy sentry ...` will NOT route until these are copied
+# into the Omarchy tree. Call the binaries directly for now - they are on PATH.
+
+set -euo pipefail
+
+readonly REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+readonly BIN_DIR=/usr/local/bin
+readonly LIB_DIR=/usr/local/lib/omarchy-sentry
+readonly CONF_DIR=/etc/omarchy
+readonly CONF_FILE="$CONF_DIR/sentry.conf"
+readonly HOOK_DIR="$CONF_DIR/sentry-hooks.d"
+readonly STATE_DIR=/var/lib/omarchy-sentry
+readonly UNIT_DIR=/etc/systemd/system
+
+if ((EUID != 0)); then
+  echo "install.sh must run as root: sudo $0" >&2
+  exit 1
+fi
+
+# The desktop user is whoever invoked sudo, not root. Resolving it here means
+# the config ships correct and the daemon never has to guess at runtime.
+target_user=${SUDO_USER:-}
+if [[ -z $target_user || $target_user == "root" ]]; then
+  target_user=$(loginctl list-sessions --no-legend 2>/dev/null |
+    while read -r sid _; do
+      props=$(loginctl show-session "$sid" -p Name -p Class -p Seat 2>/dev/null)
+      if [[ $props == *"Class=user"* && $props == *"Seat=seat"* ]]; then
+        name=${props#*Name=}
+        echo "${name%%$'\n'*}"
+        break
+      fi
+    done)
+fi
+
+if [[ -z $target_user ]]; then
+  echo "could not determine the desktop user; re-run with sudo from your session" >&2
+  exit 1
+fi
+
+echo -e "\nInstalling Omarchy Sentry for user '$target_user'..."
+
+# --- Programs --------------------------------------------------------------
+install -d -m 0755 "$LIB_DIR"
+install -m 0755 "$REPO_DIR"/bin/omarchy-sentry-* "$BIN_DIR/"
+install -m 0644 "$REPO_DIR"/lib/*.py "$LIB_DIR/"
+
+# --- Config ----------------------------------------------------------------
+install -d -m 0755 "$CONF_DIR"
+if [[ -f $CONF_FILE ]]; then
+  echo "  keeping existing $CONF_FILE"
+else
+  install -m 0600 -o root -g root "$REPO_DIR/etc/sentry.conf.example" "$CONF_FILE"
+  # Bake in the resolved user so the daemon never has to guess.
+  sed -i "s/^SENTRY_USER=.*/SENTRY_USER=$target_user/" "$CONF_FILE"
+  echo "  wrote $CONF_FILE (0600 root:root)"
+fi
+
+# --- Hooks -----------------------------------------------------------------
+# Root-owned on purpose. These run as root on an intruder verdict, so a
+# user-writable hook directory would be a straight privilege escalation:
+# anything running as the desktop user could drop a script here and get root
+# on the next lid open, bypassing the sudo password entirely.
+install -d -m 0755 -o root -g root "$HOOK_DIR"
+
+# --- Evidence store --------------------------------------------------------
+install -d -m 0700 -o root -g root "$STATE_DIR"
+install -d -m 0700 -o root -g root "$STATE_DIR/incidents"
+
+readonly EVENTS_LOG="$STATE_DIR/events.log"
+if [[ ! -f $EVENTS_LOG ]]; then
+  : >"$EVENTS_LOG"
+  chmod 0600 "$EVENTS_LOG"
+fi
+
+# Append-only. An O_APPEND write still succeeds with +a set, so this is applied
+# once and never cleared at runtime - clearing it per write would open exactly
+# the window it exists to close. It stops truncation, unlink and rewriting by
+# anyone who is not root; it does NOT stop a root attacker, who can chattr -a.
+# Real integrity comes from shipping the alert off the box.
+if chattr +a "$EVENTS_LOG" 2>/dev/null; then
+  echo "  events.log is append-only (chattr +a)"
+else
+  echo "  WARNING: could not set append-only on $EVENTS_LOG" >&2
+  echo "           the log is still 0600 root:root, but is locally rewritable by root" >&2
+fi
+
+# --- Service ---------------------------------------------------------------
+install -m 0644 "$REPO_DIR/systemd/omarchy-sentry.service" "$UNIT_DIR/"
+systemctl daemon-reload
+systemctl enable --now omarchy-sentry.service
+
+echo -e "\nInstalled. Status:"
+systemctl --no-pager --lines=0 status omarchy-sentry.service || true
+
+cat <<EOF
+
+Next:
+  journalctl -u omarchy-sentry -f     # watch it
+  sudo tail -f $EVENTS_LOG            # watch the log
+
+Close and reopen the lid to produce an event.
+
+The camera is not wired up yet (phase 2), so nothing will light the LED.
+EOF

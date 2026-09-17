@@ -1,0 +1,122 @@
+#!/bin/bash
+
+# omarchy:summary=Handle a physical-access incident: capture evidence, classify it, alert
+# omarchy:args=<lid|resume|faillock|usb|manual>
+# omarchy:examples=omarchy-sentry-trigger lid
+# omarchy:hidden=true
+
+# Runs as root, invoked by the lid watcher, the resume unit, the faillock
+# watcher and the USB udev rule. Every path into this script is a machine
+# trigger, never a user shell, so it takes exactly one positional argument and
+# never evaluates anything it is handed.
+
+set -euo pipefail
+
+readonly CONFIG_FILE=/etc/omarchy/sentry.conf
+
+source_name=${1:-manual}
+
+# Reject anything that is not a known source. udev and systemd hand us data we
+# did not generate, so this is validated rather than trusted.
+case $source_name in
+lid | resume | faillock | usb | manual) ;;
+*)
+  echo "unknown trigger source: $source_name" >&2
+  exit 64
+  ;;
+esac
+
+# --- Defaults, then config -------------------------------------------------
+# Every key has a default here so a truncated or missing config degrades to
+# safe local-only behaviour rather than failing closed and losing the event.
+ENABLED=true
+SENTRY_USER=""
+TRIGGERS=lid,resume,faillock,usb
+PASSIVE_MODE=false
+EVIDENCE_DIR=/var/lib/omarchy-sentry
+DEBOUNCE_SECONDS=20
+
+if [[ -r $CONFIG_FILE ]]; then
+  # shellcheck source=/dev/null
+  source "$CONFIG_FILE"
+fi
+
+log_journal() { echo "sentry[$source_name]: $*" >&2; }
+
+if [[ $ENABLED != "true" ]]; then
+  log_journal "disabled in config, ignoring"
+  exit 0
+fi
+
+if [[ ,$TRIGGERS, != *,$source_name,* && $source_name != "manual" ]]; then
+  log_journal "trigger not enabled in TRIGGERS, ignoring"
+  exit 0
+fi
+
+# --- Armed? ----------------------------------------------------------------
+# The toggle lives in the desktop user's Omarchy state dir so `omarchy-sentry
+# disarm` needs no root. We deliberately do NOT gate the systemd unit on this
+# file: a system service expands %h to root's home, not the user's, and
+# checking here means arming takes effect instantly with no restart.
+user_home=""
+if [[ -n $SENTRY_USER ]]; then
+  user_home=$(getent passwd "$SENTRY_USER" | cut -d: -f6 || true)
+fi
+
+if [[ -n $user_home && -f "$user_home/.local/state/omarchy/toggles/sentry-off" ]]; then
+  log_journal "disarmed by user toggle, ignoring"
+  exit 0
+fi
+
+# --- Debounce --------------------------------------------------------------
+# Opening the lid after a suspend fires both the lid watcher and the resume
+# unit within milliseconds. Without this they would become two incidents.
+mkdir -p "$EVIDENCE_DIR"
+chmod 700 "$EVIDENCE_DIR"
+
+readonly STATE_FILE="$EVIDENCE_DIR/.last-incident"
+now=$(date +%s)
+last=0
+last_dir=""
+
+if [[ -r $STATE_FILE ]]; then
+  read -r last last_dir <"$STATE_FILE" || true
+  [[ $last =~ ^[0-9]+$ ]] || last=0
+fi
+
+if ((now - last < DEBOUNCE_SECONDS)) && [[ -d ${last_dir:-/nonexistent} ]]; then
+  # Record that a second source corroborated the open incident, then stop.
+  echo "$source_name" >>"$last_dir/sources"
+  log_journal "coalesced into $(basename "$last_dir") ($(($now - $last))s after first source)"
+  exit 0
+fi
+
+# --- New incident ----------------------------------------------------------
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+incident_dir="$EVIDENCE_DIR/incidents/$stamp-$$"
+mkdir -p "$incident_dir"
+chmod 700 "$incident_dir"
+
+printf '%s\n' "$source_name" >"$incident_dir/sources"
+printf '%s %s\n' "$now" "$incident_dir" >"$STATE_FILE"
+
+log_journal "new incident $stamp-$$"
+
+# --- Append to the tamper-evident log --------------------------------------
+# events.log is chattr +a where the filesystem supports it, so this append
+# succeeds but a rewrite does not. Root can clear that attribute, so this is
+# tamper-evidence against a non-root attacker, not tamper-proofing.
+readonly EVENTS_LOG="$EVIDENCE_DIR/events.log"
+
+jq -n -c \
+  --arg ts "$(date -Is)" \
+  --arg source "$source_name" \
+  --arg incident "$(basename "$incident_dir")" \
+  --arg host "$(hostname)" \
+  '{ts: $ts, source: $source, incident: $incident, host: $host, verdict: "pending"}' \
+  >>"$EVENTS_LOG"
+
+log_journal "logged to $EVENTS_LOG"
+
+# Phases 2-6 attach here: capture evidence, run the grace period, classify the
+# incident, notify the desktop, send the remote alert and run the root hooks.
