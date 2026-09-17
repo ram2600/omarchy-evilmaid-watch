@@ -1,0 +1,114 @@
+#!/bin/bash
+
+# omarchy:summary=Capture a still from the webcam for an EvilMaid Watch incident
+# omarchy:args=<output.jpg> [--device <path>] [--resolution WxH] [--warmup <frames>]
+# omarchy:examples=omarchy-emw-capture /tmp/shot.jpg --warmup 15
+# omarchy:hidden=true
+# omarchy:requires-sudo=true
+
+# NOTE: the camera LED on Apple hardware is wired to camera power. This WILL
+# light it. That is intended - it is the same deterrent behaviour as macOS
+# DoNotDisturb, and there is no software path that captures without it.
+
+set -euo pipefail
+
+readonly LIB_DIR=${OMARCHY_EMW_LIB:-/usr/local/lib/omarchy-emw}
+# shellcheck source=../lib/emw-common.sh
+source "$LIB_DIR/emw-common.sh"
+
+device=""
+resolution=""
+warmup=""
+output=""
+
+while (($# > 0)); do
+  case $1 in
+  --device)
+    device=${2:-}
+    shift 2
+    ;;
+  --resolution)
+    resolution=${2:-}
+    shift 2
+    ;;
+  --warmup)
+    warmup=${2:-}
+    shift 2
+    ;;
+  *)
+    output=$1
+    shift
+    ;;
+  esac
+done
+
+if [[ -z $output ]]; then
+  echo "usage: omarchy-emw-capture <output.jpg> [--device <path>] [--resolution WxH] [--warmup <n>]" >&2
+  exit 64
+fi
+
+[[ -n $device ]] || device=$(conf_get CAMERA_DEVICE auto)
+[[ -n $resolution ]] || resolution=$(conf_get PHOTO_RESOLUTION 1280x720)
+[[ -n $warmup ]] || warmup=$(conf_get PHOTO_WARMUP_FRAMES 15)
+
+[[ $resolution =~ ^[0-9]+x[0-9]+$ ]] || {
+  echo "bad resolution: $resolution" >&2
+  exit 64
+}
+[[ $warmup =~ ^[0-9]+$ ]] || warmup=15
+
+# --- Device selection ------------------------------------------------------
+# Never hardcode a path. On this machine /dev/video0 is "avd", an Apple video
+# DECODER with no capture formats at all - opening it yields no image. The
+# camera is whichever node actually advertises discrete capture sizes, which
+# is a property of the hardware rather than of the enumeration order.
+select_camera() {
+  local node name
+  for node in /dev/video*; do
+    [[ -c $node ]] || continue
+    name=$(cat "/sys/class/video4linux/$(basename "$node")/name" 2>/dev/null || true)
+    # The decoder is not a camera; skip it explicitly as well as by capability,
+    # so a future driver that reports odd formats still cannot be chosen.
+    [[ $name == "avd" ]] && continue
+    if v4l2-ctl -d "$node" --list-formats-ext 2>/dev/null | grep -q "Discrete"; then
+      printf '%s' "$node"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [[ $device == "auto" || -z $device ]]; then
+  if ! device=$(select_camera); then
+    echo "no capture-capable camera found" >&2
+    exit 69
+  fi
+fi
+
+if [[ ! -c $device ]]; then
+  echo "camera device is not a character device: $device" >&2
+  exit 69
+fi
+
+# --- Capture ---------------------------------------------------------------
+# The first frames off apple_isp are black until auto-exposure settles, so we
+# read a run of frames and keep only the last. select=gte(n,N) drops the first
+# N; -frames:v 1 then takes the next one and stops.
+mkdir -p "$(dirname "$output")"
+
+if ffmpeg -hide_banner -loglevel error -nostdin \
+  -f v4l2 -input_format nv12 -video_size "$resolution" -i "$device" \
+  -vf "select=gte(n\,$warmup)" -frames:v 1 -q:v 2 -y "$output" 2>/dev/null; then
+  if [[ -s $output ]]; then
+    echo "captured $output from $device ($resolution, dropped $warmup frames)"
+    exit 0
+  fi
+  echo "ffmpeg reported success but produced no image" >&2
+  exit 70
+fi
+
+# A busy camera is expected, not exceptional: the user may be on a call. The
+# incident is already recorded, so a missing photo degrades the evidence
+# rather than failing the incident.
+echo "capture failed (device busy or unavailable): $device" >&2
+exit 75

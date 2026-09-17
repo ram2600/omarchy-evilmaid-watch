@@ -50,6 +50,7 @@ echo -e "\nInstalling Omarchy EvilMaid Watch for user '$target_user'..."
 install -d -m 0755 "$LIB_DIR"
 install -m 0755 "$REPO_DIR"/bin/omarchy-emw-* "$BIN_DIR/"
 install -m 0644 "$REPO_DIR"/lib/*.py "$LIB_DIR/"
+install -m 0644 "$REPO_DIR"/lib/*.sh "$LIB_DIR/"
 
 # --- Config ----------------------------------------------------------------
 install -d -m 0755 "$CONF_DIR"

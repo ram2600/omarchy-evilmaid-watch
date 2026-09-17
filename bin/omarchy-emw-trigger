@@ -4,6 +4,7 @@
 # omarchy:args=<lid|resume|faillock|usb|manual>
 # omarchy:examples=omarchy-emw-trigger lid
 # omarchy:hidden=true
+# omarchy:requires-sudo=true
 
 # Runs as root, invoked by the lid watcher, the resume unit, the faillock
 # watcher and the USB udev rule. Every path into this script is a machine
@@ -12,7 +13,9 @@
 
 set -euo pipefail
 
-readonly CONFIG_FILE=/etc/omarchy/emw.conf
+readonly LIB_DIR=${OMARCHY_EMW_LIB:-/usr/local/lib/omarchy-emw}
+# shellcheck source=../lib/emw-common.sh
+source "$LIB_DIR/emw-common.sh"
 
 source_name=${1:-manual}
 
@@ -26,29 +29,16 @@ lid | resume | faillock | usb | manual) ;;
   ;;
 esac
 
-# --- Defaults, then config -------------------------------------------------
-# Every key has a default here so a truncated or missing config degrades to
-# safe local-only behaviour rather than failing closed and losing the event.
-ENABLED=true
-EMW_USER=""
-TRIGGERS=lid,resume,faillock,usb
-PASSIVE_MODE=false
-EVIDENCE_DIR=/var/lib/omarchy-emw
-DEBOUNCE_SECONDS=20
-
-if [[ -r $CONFIG_FILE ]]; then
-  # shellcheck source=/dev/null
-  source "$CONFIG_FILE"
-fi
-
 log_journal() { echo "emw[$source_name]: $*" >&2; }
 
-if [[ $ENABLED != "true" ]]; then
+# --- Enabled? --------------------------------------------------------------
+if ! conf_bool ENABLED true; then
   log_journal "disabled in config, ignoring"
   exit 0
 fi
 
-if [[ ,$TRIGGERS, != *,$source_name,* && $source_name != "manual" ]]; then
+triggers=$(conf_get TRIGGERS "lid,resume,faillock,usb")
+if [[ ,$triggers, != *,$source_name,* && $source_name != "manual" ]]; then
   log_journal "trigger not enabled in TRIGGERS, ignoring"
   exit 0
 fi
@@ -58,11 +48,7 @@ fi
 # disarm` needs no root. We deliberately do NOT gate the systemd unit on this
 # file: a system service expands %h to root's home, not the user's, and
 # checking here means arming takes effect instantly with no restart.
-user_home=""
-if [[ -n $EMW_USER ]]; then
-  user_home=$(getent passwd "$EMW_USER" | cut -d: -f6 || true)
-fi
-
+user_home=$(emw_user_home || true)
 if [[ -n $user_home && -f "$user_home/.local/state/omarchy/toggles/emw-off" ]]; then
   log_journal "disarmed by user toggle, ignoring"
   exit 0
@@ -71,10 +57,14 @@ fi
 # --- Debounce --------------------------------------------------------------
 # Opening the lid after a suspend fires both the lid watcher and the resume
 # unit within milliseconds. Without this they would become two incidents.
-mkdir -p "$EVIDENCE_DIR"
-chmod 700 "$EVIDENCE_DIR"
+evidence_dir=$(conf_get EVIDENCE_DIR /var/lib/omarchy-emw)
+debounce=$(conf_get DEBOUNCE_SECONDS 20)
+[[ $debounce =~ ^[0-9]+$ ]] || debounce=20
 
-readonly STATE_FILE="$EVIDENCE_DIR/.last-incident"
+mkdir -p "$evidence_dir"
+chmod 700 "$evidence_dir"
+
+readonly STATE_FILE="$evidence_dir/.last-incident"
 now=$(date +%s)
 last=0
 last_dir=""
@@ -84,16 +74,16 @@ if [[ -r $STATE_FILE ]]; then
   [[ $last =~ ^[0-9]+$ ]] || last=0
 fi
 
-if ((now - last < DEBOUNCE_SECONDS)) && [[ -d ${last_dir:-/nonexistent} ]]; then
+if ((now - last < debounce)) && [[ -d ${last_dir:-/nonexistent} ]]; then
   # Record that a second source corroborated the open incident, then stop.
   echo "$source_name" >>"$last_dir/sources"
-  log_journal "coalesced into $(basename "$last_dir") ($(($now - $last))s after first source)"
+  log_journal "coalesced into $(basename "$last_dir") ($((now - last))s after first source)"
   exit 0
 fi
 
 # --- New incident ----------------------------------------------------------
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-incident_dir="$EVIDENCE_DIR/incidents/$stamp-$$"
+incident_dir="$evidence_dir/incidents/$stamp-$$"
 mkdir -p "$incident_dir"
 chmod 700 "$incident_dir"
 
@@ -106,7 +96,10 @@ log_journal "new incident $stamp-$$"
 # events.log is chattr +a where the filesystem supports it, so this append
 # succeeds but a rewrite does not. Root can clear that attribute, so this is
 # tamper-evidence against a non-root attacker, not tamper-proofing.
-readonly EVENTS_LOG="$EVIDENCE_DIR/events.log"
+#
+# This is written BEFORE any slow work. An attacker who cuts power during the
+# capture still leaves this line behind.
+readonly EVENTS_LOG="$evidence_dir/events.log"
 
 jq -n -c \
   --arg ts "$(date -Is)" \
@@ -116,7 +109,20 @@ jq -n -c \
   '{ts: $ts, source: $source, incident: $incident, host: $host, verdict: "pending"}' \
   >>"$EVENTS_LOG"
 
-log_journal "logged to $EVENTS_LOG"
+# --- Capture evidence ------------------------------------------------------
+# Deliberately BEFORE the grace period. Whoever opened the lid is present now;
+# waiting a minute to decide whether they were authorised would miss them.
+if conf_bool CAPTURE_PHOTO true; then
+  if omarchy-emw-capture "$incident_dir/photo.jpg" >>"$incident_dir/capture.log" 2>&1; then
+    log_journal "photo captured"
+  else
+    # A busy or missing camera degrades the evidence; it does not void the
+    # incident, which is already on disk.
+    log_journal "photo capture failed (see $incident_dir/capture.log)"
+  fi
+fi
 
-# Phases 2-6 attach here: capture evidence, run the grace period, classify the
-# incident, notify the desktop, send the remote alert and run the root hooks.
+log_journal "incident recorded at $incident_dir"
+
+# Phases 3-6 attach here: grace period, classification, desktop notification,
+# remote alert and root hooks.
