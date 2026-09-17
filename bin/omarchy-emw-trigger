@@ -160,6 +160,9 @@ no)
   fi
   ;;
 *)
+  # Reached for "yes" and for "unknown". Treating an undetermined lock state
+  # as locked is deliberate: it costs a grace period and possibly a false
+  # alert, whereas the other bias costs a missed intrusion.
   if conf_bool TRUSTED_UNLOCK true; then
     log_journal "locked; waiting up to ${grace}s for a trusted unlock"
     verdict=intruder

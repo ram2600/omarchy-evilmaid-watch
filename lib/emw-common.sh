@@ -64,11 +64,57 @@ emw_session_id() {
 }
 
 # emw_locked <session-id>
-# Prints yes | no | unknown. LockedHint is logind's view of whether the
-# session's lock screen is up; Quickshell sets it through logind like any
-# other locker, so this works without knowing which locker is in use.
+# Prints yes | no | unknown.
+#
+# logind's LockedHint is NOT authoritative here. Omarchy's lock screen is
+# Quickshell, which takes the lock through the ext-session-lock Wayland
+# protocol and never tells logind, so LockedHint reads "no" the whole time the
+# screen is locked. Omarchy ships omarchy-hyprland-session-locked precisely
+# because, as its own comment puts it, "Hyprland reports no lock state
+# directly" - it infers the lock from LOCK appearing in a monitor's
+# solitaryBlockedBy. Ask that first and keep LockedHint only as a fallback for
+# lockers that do talk to logind.
+#
+# Callers must treat "unknown" as locked: failing toward running the grace
+# period and possibly alerting is the safe direction for a security tool.
 emw_locked() {
-  local sid=$1 hint
+  local sid=$1 user uid his hyprdir rc hint
+
+  user=$(conf_get EMW_USER "")
+  uid=""
+  [[ -n $user ]] && uid=$(id -u "$user" 2>/dev/null || true)
+
+  if [[ -n $uid && -d /run/user/$uid/hypr ]]; then
+    for hyprdir in /run/user/"$uid"/hypr/*/; do
+      # A stale instance directory outlives its compositor; only a live socket
+      # means hyprctl will actually get an answer.
+      [[ -S $hyprdir/.socket.sock ]] || continue
+      his=$(basename "$hyprdir")
+      rc=0
+      if ((EUID == 0)); then
+        runuser -u "$user" -- env \
+          XDG_RUNTIME_DIR="/run/user/$uid" \
+          HYPRLAND_INSTANCE_SIGNATURE="$his" \
+          omarchy-hyprland-session-locked || rc=$?
+      else
+        XDG_RUNTIME_DIR="/run/user/$uid" \
+          HYPRLAND_INSTANCE_SIGNATURE="$his" \
+          omarchy-hyprland-session-locked || rc=$?
+      fi
+      case $rc in
+      0)
+        printf 'yes'
+        return 0
+        ;;
+      1)
+        printf 'no'
+        return 0
+        ;;
+      esac
+      # rc 2 means the compositor could not decide; try logind below.
+    done
+  fi
+
   hint=$(loginctl show-session "$sid" -p LockedHint --value 2>/dev/null || true)
   case $hint in
   yes | no) printf '%s' "$hint" ;;
