@@ -69,10 +69,47 @@ PY
 
 # curl driven entirely from stdin, so no URL containing a token is ever visible
 # in the process table.
+#
+# Deliberately NOT using fail-with-body: Telegram reports its real reason in a
+# JSON body even on a 401 or 409, and making curl exit non-zero there throws
+# that away and leaves the caller unable to tell "wrong token" from "no
+# network". Let the body through and judge it on .ok instead.
 api_call() {
   local url=$1
-  printf 'url = "%s"\nsilent\nshow-error\nfail-with-body\nmax-time = 20\nconnect-timeout = 10\n' "$url" |
+  printf 'url = "%s"\nsilent\nshow-error\nmax-time = 20\nconnect-timeout = 10\n' "$url" |
     curl -K -
+}
+
+# Reports why an API response is unusable, distinguishing the cases that need
+# different fixes from the operator.
+api_failed() {
+  local response=$1 context=$2 description code
+
+  if [[ -z $response ]]; then
+    echo "Could not reach the Telegram API ($context) - no response." >&2
+    echo "Check your network and try again." >&2
+    return
+  fi
+
+  code=$(jq -r '.error_code // empty' <<<"$response" 2>/dev/null || true)
+  description=$(jq -r '.description // empty' <<<"$response" 2>/dev/null || true)
+
+  case $code in
+  401)
+    echo "Telegram rejected the token (401 Unauthorized)." >&2
+    echo "The token is wrong, revoked, or was pasted incompletely." >&2
+    echo "Get the current one from @BotFather with /mybots -> your bot -> API Token." >&2
+    ;;
+  409)
+    echo "Telegram returned 409 Conflict." >&2
+    echo "Another client is already consuming this bot's updates - likely the" >&2
+    echo "other DoNotDisturb host using the same bot, via polling or a webhook." >&2
+    echo "Give this machine its own bot, or enter the chat id manually below." >&2
+    ;;
+  *)
+    echo "Telegram API error ($context): ${description:-${response:0:200}}" >&2
+    ;;
+  esac
 }
 
 # --- Telegram --------------------------------------------------------------
@@ -92,20 +129,30 @@ EOF
   local token=""
   read -rsp "Paste the bot token (input hidden): " token
   echo
+
+  # Strip surrounding whitespace and any stray CR. A trailing newline or space
+  # picked up by a copy-paste is itself a cause of 401, and it would also break
+  # the curl -K config, where the token is interpolated into a quoted value.
+  token=$(printf '%s' "$token" | tr -d '"\\\n\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+
   [[ -n $token ]] || {
     echo "no token given; aborting" >&2
     exit 1
   }
 
-  echo "Verifying token..."
-  local me
-  me=$(api_call "https://api.telegram.org/bot$token/getMe") || {
-    echo "could not reach the Telegram API" >&2
-    exit 75
-  }
+  # Shape check only - a warning, not a gate, since the API is the real
+  # authority and the format is not formally guaranteed.
+  if [[ ! $token =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+    echo "Warning: that does not look like a bot token (expected 123456789:AA...)." >&2
+    echo "         Continuing anyway - the API will decide." >&2
+  fi
 
-  if [[ $(jq -r '.ok // false' <<<"$me") != "true" ]]; then
-    echo "Telegram rejected that token: $(jq -r '.description // "unknown error"' <<<"$me")" >&2
+  echo "Verifying token (${#token} chars)..."
+  local me
+  me=$(api_call "https://api.telegram.org/bot$token/getMe") || true
+
+  if [[ $(jq -r '.ok // false' <<<"${me:-}" 2>/dev/null || echo false) != "true" ]]; then
+    api_failed "${me:-}" "getMe"
     exit 1
   fi
 
@@ -124,25 +171,41 @@ EOF
 
   echo "Looking for your chat..."
   local updates chat_id chat_name
-  updates=$(api_call "https://api.telegram.org/bot$token/getUpdates") || {
-    echo "could not reach the Telegram API" >&2
-    exit 75
-  }
+  updates=$(api_call "https://api.telegram.org/bot$token/getUpdates") || true
 
-  chat_id=$(jq -r '[.result[].message.chat.id] | last // empty' <<<"$updates")
-  chat_name=$(jq -r '[.result[].message.chat | (.username // .first_name // "")] | last // empty' <<<"$updates")
-
-  if [[ -z $chat_id ]]; then
-    cat <<EOF >&2
-
-No messages found. Telegram only returns recent updates, so this happens if
-the message was not actually delivered, or was sent before the bot existed.
-Send another message to @$botname and run this again.
-EOF
-    exit 1
+  chat_id=""
+  chat_name=""
+  if [[ $(jq -r '.ok // false' <<<"${updates:-}" 2>/dev/null || echo false) == "true" ]]; then
+    chat_id=$(jq -r '[.result[].message.chat.id] | last // empty' <<<"$updates")
+    chat_name=$(jq -r '[.result[].message.chat | (.username // .first_name // "")] | last // empty' <<<"$updates")
+  else
+    api_failed "${updates:-}" "getUpdates"
   fi
 
-  echo "  found chat $chat_id${chat_name:+ ($chat_name)}"
+  # Automatic discovery fails in a case worth handling properly: a bot already
+  # in use elsewhere. Updates are delivered once and then consumed, and a bot
+  # with a webhook set cannot be polled at all - so a shared bot will often
+  # yield nothing here even though everything is configured correctly.
+  if [[ -z $chat_id ]]; then
+    cat <<EOF
+
+No chat found automatically. That is expected if this bot is already used by
+another host: Telegram hands each update to one consumer, and a bot with a
+webhook cannot be polled at all.
+
+You can enter the chat id by hand. On your other DoNotDisturb host it is the
+telegramChatID setting; it looks like 123456789 (or -100... for a group).
+
+EOF
+    read -rp "Chat id (blank to abort): " chat_id
+    chat_id=$(printf '%s' "$chat_id" | tr -cd '0-9-')
+    [[ -n $chat_id ]] || {
+      echo "no chat id given; aborting" >&2
+      exit 1
+    }
+  else
+    echo "  found chat $chat_id${chat_name:+ ($chat_name)}"
+  fi
 
   conf_set TELEGRAM_BOT_TOKEN "$token"
   conf_set TELEGRAM_CHAT_ID "$chat_id"
