@@ -78,46 +78,54 @@ emw_session_id() {
 # Callers must treat "unknown" as locked: failing toward running the grace
 # period and possibly alerting is the safe direction for a security tool.
 emw_locked() {
-  local sid=$1 user uid his hyprdir rc hint
+  local sid=$1 user uid attempt answer hint
 
   user=$(conf_get EMW_USER "")
   uid=""
   [[ -n $user ]] && uid=$(id -u "$user" 2>/dev/null || true)
 
-  if [[ -n $uid && -d /run/user/$uid/hypr ]]; then
-    for hyprdir in /run/user/"$uid"/hypr/*/; do
-      # A stale instance directory outlives its compositor; only a live socket
-      # means hyprctl will actually get an answer.
-      [[ -S $hyprdir/.socket.sock ]] || continue
-      his=$(basename "$hyprdir")
-      rc=0
-      if ((EUID == 0)); then
-        runuser -u "$user" -- env \
-          XDG_RUNTIME_DIR="/run/user/$uid" \
-          HYPRLAND_INSTANCE_SIGNATURE="$his" \
-          omarchy-hyprland-session-locked || rc=$?
-      else
-        XDG_RUNTIME_DIR="/run/user/$uid" \
-          HYPRLAND_INSTANCE_SIGNATURE="$his" \
-          omarchy-hyprland-session-locked || rc=$?
-      fi
-      case $rc in
-      0)
+  if [[ -n $uid ]]; then
+    # Retry briefly. This is called the instant the lid opens, while the
+    # compositor is still re-enumerating monitors and the shell may not answer
+    # on the first try. A second of patience here is far cheaper than
+    # misclassifying the incident.
+    for attempt in 1 2 3 4; do
+      answer=$(emw_shell_as_user "$user" "$uid" lock isLocked 2>/dev/null || true)
+      case $answer in
+      true)
         printf 'yes'
         return 0
         ;;
-      1)
+      false)
         printf 'no'
         return 0
         ;;
       esac
-      # rc 2 means the compositor could not decide; try logind below.
+      sleep 0.5
     done
   fi
 
+  # Fallback for a session that is not this shell. Note LockedHint is NOT
+  # trusted above: Quickshell never sets it, so a definite-looking "no" from
+  # logind would silently override a correct "locked" answer.
   hint=$(loginctl show-session "$sid" -p LockedHint --value 2>/dev/null || true)
   case $hint in
   yes | no) printf '%s' "$hint" ;;
   *) printf 'unknown' ;;
   esac
+}
+
+# emw_shell_as_user <user> <uid> <target> <method> [args...]
+# Calls the Omarchy Quickshell IPC as the desktop user. omarchy-shell locates
+# the shell through the Wayland socket in XDG_RUNTIME_DIR, so that variable has
+# to be set even when we are already the right user.
+emw_shell_as_user() {
+  local user=$1 uid=$2
+  shift 2
+  if ((EUID == 0)); then
+    runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
+      omarchy-shell "$@"
+  else
+    XDG_RUNTIME_DIR="/run/user/$uid" omarchy-shell "$@"
+  fi
 }

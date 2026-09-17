@@ -106,6 +106,17 @@ fi
 printf '%s\n' "$locked_at_trigger" >"$incident_dir/locked-at-trigger"
 log_journal "locked at trigger: $locked_at_trigger"
 
+# Keep the locker's own view of the world alongside our conclusion. When a
+# verdict later looks wrong, this is the difference between diagnosing it and
+# guessing - it records what the lock screen actually thought at the time.
+emw_user=$(conf_get EMW_USER "")
+emw_uid=""
+[[ -n $emw_user ]] && emw_uid=$(id -u "$emw_user" 2>/dev/null || true)
+if [[ -n $emw_uid ]]; then
+  emw_shell_as_user "$emw_user" "$emw_uid" lock status \
+    >"$incident_dir/lock-status.json" 2>/dev/null || true
+fi
+
 # --- Append to the tamper-evident log --------------------------------------
 # events.log is chattr +a where the filesystem supports it, so this append
 # succeeds but a rewrite does not. Root can clear that attribute, so this is
