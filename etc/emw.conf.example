@@ -59,6 +59,10 @@ NTFY_URL=https://ntfy.sh
 NTFY_TOPIC=
 NTFY_TOKEN=
 
+# How long a queued alert stays worth sending. A three-day-old "someone opened
+# your laptop" is noise, and this also bounds the spool if it can never drain.
+SPOOL_MAX_AGE_HOURS=72
+
 # Desktop toast on the local session.
 DESKTOP_NOTIFY=true
 

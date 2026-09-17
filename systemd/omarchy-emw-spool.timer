@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodically retry queued Omarchy EvilMaid Watch alerts
+
+[Timer]
+# Soon after boot: a machine opened while powered off, then booted, should
+# alert as soon as it has a network.
+OnBootSec=90
+OnUnitActiveSec=120
+AccuracySec=15
+# Catch up after a suspend rather than waiting out a full interval.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

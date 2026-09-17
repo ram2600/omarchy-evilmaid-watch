@@ -94,7 +94,11 @@ fi
 
 # --- Service ---------------------------------------------------------------
 install -m 0644 "$REPO_DIR/systemd/omarchy-emw.service" "$UNIT_DIR/"
+install -m 0644 "$REPO_DIR/systemd/omarchy-emw-spool.service" "$UNIT_DIR/"
+install -m 0644 "$REPO_DIR/systemd/omarchy-emw-spool.timer" "$UNIT_DIR/"
+install -d -m 0700 -o root -g root "$STATE_DIR/spool"
 systemctl daemon-reload
+systemctl enable --now omarchy-emw-spool.timer
 systemctl enable omarchy-emw.service
 # restart, not `enable --now`: --now only *starts* a stopped unit, so on a
 # re-install the long-running watcher would keep executing the previous
@@ -109,10 +113,15 @@ systemctl --no-pager --lines=0 status omarchy-emw.service || true
 cat <<EOF
 
 Next:
-  journalctl -u omarchy-emw -f     # watch it
-  sudo tail -f $EVENTS_LOG          # watch the log
+  journalctl -u omarchy-emw -f          # watch it live
+  sudo omarchy-emw-show                 # view the latest incident
+  sudo tail -f $EVENTS_LOG   # the append-only log
 
-Close and reopen the lid to produce an event.
+Lock the screen, then close and reopen the lid to produce an incident.
+Unlock within the grace window and it stays silent; walk away and it escalates.
 
-The camera is not wired up yet (phase 2), so nothing will light the LED.
+NOTE: capturing lights the camera LED. That is hardware-wired on this machine
+and is intended - the same deterrent behaviour as macOS DoNotDisturb.
+
+Remote alerts are off until you set ALERT_CHANNEL in $CONF_FILE.
 EOF

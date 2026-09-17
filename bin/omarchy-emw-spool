@@ -1,0 +1,54 @@
+#!/bin/bash
+
+# omarchy:summary=Retry EvilMaid Watch alerts that could not be sent
+# omarchy:hidden=true
+# omarchy:requires-sudo=true
+
+# Run by omarchy-emw-spool.timer and on network-online. An evil-maid event is
+# most likely exactly when the machine has no network - somewhere unfamiliar,
+# lid shut - so the alert has to survive being undeliverable at the moment it
+# matters.
+
+set -euo pipefail
+
+readonly LIB_DIR=${OMARCHY_EMW_LIB:-/usr/local/lib/omarchy-emw}
+# shellcheck source=../lib/emw-common.sh
+source "$LIB_DIR/emw-common.sh"
+
+evidence_dir=$(conf_get EVIDENCE_DIR /var/lib/omarchy-emw)
+spool_dir="$evidence_dir/spool"
+max_age_hours=$(conf_get SPOOL_MAX_AGE_HOURS 72)
+[[ $max_age_hours =~ ^[0-9]+$ ]] || max_age_hours=72
+
+[[ -d $spool_dir ]] || exit 0
+
+# Only one drain at a time: the timer and a manual run must not both try to
+# send the same entry and deliver it twice.
+exec 9>"$evidence_dir/.spool.lock"
+flock -n 9 || {
+  echo "emw-spool: another drain is running" >&2
+  exit 0
+}
+
+pending=0
+sent=0
+
+for entry in "$spool_dir"/*.json; do
+  [[ -e $entry ]] || continue
+  ((pending++)) || true
+
+  # A three-day-old "someone opened your laptop" is noise, not an alert, and
+  # an undrainable spool would otherwise grow without bound.
+  if [[ -n $(find "$entry" -mmin "+$((max_age_hours * 60))" -print -quit 2>/dev/null) ]]; then
+    echo "emw-spool: dropping $entry (older than ${max_age_hours}h)" >&2
+    rm -f "$entry"
+    continue
+  fi
+
+  if omarchy-emw-alert --from-spool "$entry"; then
+    ((sent++)) || true
+  fi
+done
+
+((pending > 0)) && echo "emw-spool: $sent/$pending delivered" >&2
+exit 0

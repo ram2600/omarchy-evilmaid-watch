@@ -227,6 +227,13 @@ intruder | unattended) notify=true ;;
 attended | benign) conf_bool NOTIFY_ON_BENIGN false && notify=true ;;
 esac
 
+# Passive mode records the incident and says nothing at all - no toast, no
+# remote alert, no hooks. Upstream DoNotDisturb calls this passiveMode.
+if conf_bool PASSIVE_MODE false; then
+  log_journal "passive mode: incident logged, no alerting"
+  notify=false
+fi
+
 if conf_bool DESKTOP_NOTIFY true && [[ $notify == "true" ]]; then
   sources_list=$(tr '\n' ',' <"$incident_dir/sources" | sed 's/,$//')
   case $verdict in
@@ -252,6 +259,28 @@ if conf_bool DESKTOP_NOTIFY true && [[ $notify == "true" ]]; then
   omarchy-emw-notify "${notify_args[@]}" || log_journal "desktop notification failed"
 fi
 
+# --- Remote alert ----------------------------------------------------------
+# The part that survives the machine being stolen or wiped. A failed send is
+# spooled, not dropped: an evil-maid event is most likely precisely when the
+# machine has no network.
+alert=false
+case $verdict in
+intruder | unattended) alert=true ;;
+attended) conf_bool ALERT_WHEN_UNLOCKED false && alert=true ;;
+esac
+
+if conf_bool PASSIVE_MODE false; then
+  alert=false
+fi
+
+if [[ $alert == "true" ]]; then
+  if omarchy-emw-alert "$incident_dir" --verdict "$verdict"; then
+    log_journal "remote alert sent"
+  else
+    log_journal "remote alert failed; spooled for retry"
+  fi
+fi
+
 log_journal "incident recorded at $incident_dir"
 
-# Phases 4-6 attach here: remote alert and root hooks.
+# Phases 5-6 attach here: resume/faillock/USB triggers and root hooks.

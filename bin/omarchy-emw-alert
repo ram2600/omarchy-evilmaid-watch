@@ -1,0 +1,236 @@
+#!/bin/bash
+
+# omarchy:summary=Send an EvilMaid Watch alert off the machine, spooling on failure
+# omarchy:args=<incident-dir> [--verdict <v>] [--spool-only] [--from-spool <file>]
+# omarchy:examples=omarchy-emw-alert /var/lib/omarchy-emw/incidents/2026...-123
+# omarchy:hidden=true
+# omarchy:requires-sudo=true
+
+# Getting the evidence off the box is the part that survives the laptop being
+# stolen, wiped, or simply never seen again. Everything else this tool does is
+# only useful if you still have the machine.
+#
+# Delivery is best effort but never silently dropped: a send that fails is
+# written to the spool and retried by omarchy-emw-spool.
+
+set -euo pipefail
+
+readonly LIB_DIR=${OMARCHY_EMW_LIB:-/usr/local/lib/omarchy-emw}
+# shellcheck source=../lib/emw-common.sh
+source "$LIB_DIR/emw-common.sh"
+
+incident_dir=""
+verdict=""
+spool_only=false
+from_spool=""
+
+while (($# > 0)); do
+  case $1 in
+  --verdict)
+    verdict=${2:-}
+    shift 2
+    ;;
+  --spool-only)
+    spool_only=true
+    shift
+    ;;
+  --from-spool)
+    from_spool=${2:-}
+    shift 2
+    ;;
+  *)
+    incident_dir=$1
+    shift
+    ;;
+  esac
+done
+
+log() { echo "emw-alert: $*" >&2; }
+
+# Values are interpolated into a curl -K config, where each line is
+# `key = "value"`. A quote, backslash or newline in a value would close the
+# quoted string and let the rest be read as further curl options - an injection
+# specific to -K. Device names and hostnames are attacker-influenceable, so
+# every interpolated value goes through this first.
+sanitize() {
+  printf '%s' "$1" | tr -d '"\\\n\r' | cut -c1-256
+}
+
+evidence_dir=$(conf_get EVIDENCE_DIR /var/lib/omarchy-emw)
+readonly SPOOL_DIR="$evidence_dir/spool"
+
+# --- Load the payload ------------------------------------------------------
+if [[ -n $from_spool ]]; then
+  [[ -r $from_spool ]] || {
+    log "no such spool entry: $from_spool"
+    exit 69
+  }
+  incident=$(jq -r '.incident' "$from_spool")
+  verdict=$(jq -r '.verdict' "$from_spool")
+  host=$(jq -r '.host' "$from_spool")
+  when=$(jq -r '.ts' "$from_spool")
+  sources=$(jq -r '.sources' "$from_spool")
+  photo=$(jq -r '.photo // ""' "$from_spool")
+  spool_file=$from_spool
+else
+  [[ -d $incident_dir ]] || {
+    log "no such incident directory: $incident_dir"
+    exit 64
+  }
+  incident=$(basename "$incident_dir")
+  [[ -n $verdict ]] || verdict=$(jq -r '.verdict // "unknown"' "$incident_dir/verdict.json" 2>/dev/null || echo unknown)
+  host=$(hostname)
+  when=$(date -Is)
+  sources=$(tr '\n' ',' <"$incident_dir/sources" 2>/dev/null | sed 's/,$//')
+  photo=""
+  [[ -s $incident_dir/photo.jpg ]] && photo="$incident_dir/photo.jpg"
+  spool_file=""
+fi
+
+channel=$(conf_get ALERT_CHANNEL none)
+if [[ $channel == "none" ]]; then
+  log "ALERT_CHANNEL=none; not sending"
+  exit 0
+fi
+
+title="EvilMaid Watch: $(sanitize "$verdict") on $(sanitize "$host")"
+body="Incident $(sanitize "$incident")
+Verdict:  $(sanitize "$verdict")
+Trigger:  $(sanitize "$sources")
+Time:     $(sanitize "$when")"
+
+# --- Spool helper ----------------------------------------------------------
+spool_it() {
+  mkdir -p "$SPOOL_DIR"
+  chmod 700 "$SPOOL_DIR"
+  local dest="${spool_file:-$SPOOL_DIR/$incident.json}"
+  # The token is deliberately NOT stored here; it is re-read from the config at
+  # send time, so the spool never becomes a second place a credential lives.
+  jq -n \
+    --arg incident "$incident" --arg verdict "$verdict" --arg host "$host" \
+    --arg ts "$when" --arg sources "$sources" --arg photo "$photo" \
+    '{incident: $incident, verdict: $verdict, host: $host, ts: $ts,
+      sources: $sources, photo: $photo}' >"$dest"
+  chmod 600 "$dest"
+  log "spooled to $dest"
+}
+
+if $spool_only; then
+  spool_it
+  exit 0
+fi
+
+# --- Backends --------------------------------------------------------------
+send_ntfy() {
+  local url topic token target cfg
+  url=$(conf_get NTFY_URL https://ntfy.sh)
+  topic=$(conf_get NTFY_TOPIC "")
+  token=$(conf_get NTFY_TOKEN "")
+  [[ -n $topic ]] || {
+    log "NTFY_TOPIC unset"
+    return 1
+  }
+  target="${url%/}/$(sanitize "$topic")"
+
+  cfg="url = \"$target\"
+header = \"Title: $(sanitize "$title")\"
+header = \"Priority: urgent\"
+header = \"Tags: rotating_light\"
+silent
+show-error
+fail-with-body
+max-time = 30
+connect-timeout = 10
+retry = 1
+"
+  [[ -n $token ]] && cfg+="header = \"Authorization: Bearer $(sanitize "$token")\"
+"
+
+  if [[ -n $photo && -s $photo ]]; then
+    cfg+="header = \"Filename: $(sanitize "$incident").jpg\"
+upload-file = \"$photo\"
+"
+  else
+    cfg+="data = \"$(printf '%s' "$body" | tr '\n' ' ')\"
+"
+  fi
+
+  printf '%s' "$cfg" | curl -K - >/dev/null
+}
+
+send_telegram() {
+  local token chat cfg
+  token=$(conf_get TELEGRAM_BOT_TOKEN "")
+  chat=$(conf_get TELEGRAM_CHAT_ID "")
+  [[ -n $token && -n $chat ]] || {
+    log "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID unset"
+    return 1
+  }
+
+  # The token sits in the URL, so the whole config goes in over stdin. It never
+  # appears in argv, where /proc/<pid>/cmdline would expose it to every process
+  # on the machine for the duration of the send.
+  if [[ -n $photo && -s $photo ]]; then
+    cfg="url = \"https://api.telegram.org/bot$(sanitize "$token")/sendPhoto\"
+form = \"chat_id=$(sanitize "$chat")\"
+form = \"caption=$(printf '%s' "$body" | tr '\n' ' ')\"
+form = \"photo=@$photo;type=image/jpeg\"
+"
+  else
+    cfg="url = \"https://api.telegram.org/bot$(sanitize "$token")/sendMessage\"
+form = \"chat_id=$(sanitize "$chat")\"
+form = \"text=$(printf '%s' "$body" | tr '\n' ' ')\"
+"
+  fi
+  cfg+="silent
+show-error
+fail-with-body
+max-time = 30
+connect-timeout = 10
+retry = 1
+"
+  printf '%s' "$cfg" | curl -K - >/dev/null
+}
+
+# --- Dispatch --------------------------------------------------------------
+sent=false
+failed=false
+
+case $channel in
+ntfy | both)
+  if send_ntfy; then
+    log "sent via ntfy"
+    sent=true
+  else
+    log "ntfy send failed"
+    failed=true
+  fi
+  ;;
+esac
+
+case $channel in
+telegram | both)
+  if send_telegram; then
+    log "sent via telegram"
+    sent=true
+  else
+    log "telegram send failed"
+    failed=true
+  fi
+  ;;
+esac
+
+# On "both", one surviving channel is enough to consider the evidence off the
+# box; spooling then would duplicate the alert that already arrived.
+if $sent; then
+  [[ -n $spool_file && -f $spool_file ]] && rm -f "$spool_file"
+  exit 0
+fi
+
+if $failed; then
+  spool_it
+  exit 75
+fi
+
+log "no backend matched ALERT_CHANNEL=$channel"
+exit 64
