@@ -96,9 +96,13 @@ fi
 install -m 0644 "$REPO_DIR/systemd/omarchy-emw.service" "$UNIT_DIR/"
 install -m 0644 "$REPO_DIR/systemd/omarchy-emw-spool.service" "$UNIT_DIR/"
 install -m 0644 "$REPO_DIR/systemd/omarchy-emw-spool.timer" "$UNIT_DIR/"
+install -m 0644 "$REPO_DIR/systemd/omarchy-emw-resume.service" "$UNIT_DIR/"
+install -m 0644 "$REPO_DIR/systemd/99-omarchy-emw-usb.rules" /etc/udev/rules.d/
 install -d -m 0700 -o root -g root "$STATE_DIR/spool"
 systemctl daemon-reload
 systemctl enable --now omarchy-emw-spool.timer
+systemctl enable omarchy-emw-resume.service
+udevadm control --reload-rules
 systemctl enable omarchy-emw.service
 # restart, not `enable --now`: --now only *starts* a stopped unit, so on a
 # re-install the long-running watcher would keep executing the previous

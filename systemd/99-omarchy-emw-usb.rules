@@ -1,0 +1,10 @@
+# Report a newly attached USB device to Omarchy EvilMaid Watch.
+#
+# DEVTYPE=="usb_device" only, never usb_interface: one physical device
+# enumerates several interfaces, and matching interfaces would turn a single
+# plugged-in keyboard into a burst of incidents.
+#
+# systemd-run --no-block because udev kills a RUN program that outlives its
+# event, and the trigger deliberately sleeps through a 60s grace period.
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", \
+  RUN+="/usr/bin/systemd-run --no-block --quiet --collect --unit=omarchy-emw-usb-%k /usr/local/bin/omarchy-emw-trigger usb"

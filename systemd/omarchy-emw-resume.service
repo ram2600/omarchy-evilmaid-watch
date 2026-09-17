@@ -1,0 +1,19 @@
+[Unit]
+Description=Report resume-from-suspend to Omarchy EvilMaid Watch
+# Mirrors omarchy-wifi-resume-fix.service, the established resume-hook shape on
+# this machine. Runs on the resume side only, so it is unaffected by the 15s
+# InhibitDelayMaxSec budget that omarchy-sleep-lock uses on the way down.
+After=suspend.target hibernate.target hybrid-sleep.target suspend-then-hibernate.target
+After=omarchy-emw.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/omarchy-emw-trigger resume
+# The resume path must never stall on us, and a lost trigger is far better than
+# a sleep target stuck in a failed state. The lid watcher fires independently
+# anyway, and the debounce collapses the two into one incident.
+TimeoutStartSec=30
+SuccessExitStatus=0 64 75
+
+[Install]
+WantedBy=suspend.target hibernate.target hybrid-sleep.target suspend-then-hibernate.target
