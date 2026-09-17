@@ -85,10 +85,16 @@ emw_locked() {
   [[ -n $user ]] && uid=$(id -u "$user" 2>/dev/null || true)
 
   if [[ -n $uid ]]; then
-    # Retry briefly. This is called the instant the lid opens, while the
-    # compositor is still re-enumerating monitors and the shell may not answer
-    # on the first try. A second of patience here is far cheaper than
-    # misclassifying the incident.
+    # Probe briefly, then give up and let the caller's grace loop do the
+    # waiting. This runs the instant the lid opens - which, after a suspend, is
+    # while the shell is still coming back and may not answer at all. The probe
+    # is kept short on purpose: it sits in front of the camera capture, and
+    # delaying the photo to interrogate the lock screen is backwards when the
+    # person we want a picture of is standing there now.
+    #
+    # Giving up fast is safe because "unknown" counts as locked, so the grace
+    # loop runs anyway and re-probes every 2s for the full window. That loop is
+    # where a shell recovering from resume gets the time it needs.
     for attempt in 1 2 3 4; do
       answer=$(emw_shell_as_user "$user" "$uid" lock isLocked 2>/dev/null || true)
       case $answer in
@@ -101,7 +107,7 @@ emw_locked() {
         return 0
         ;;
       esac
-      sleep 0.5
+      sleep 0.25
     done
   fi
 
