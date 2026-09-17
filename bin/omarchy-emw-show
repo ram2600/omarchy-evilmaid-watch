@@ -1,0 +1,158 @@
+#!/bin/bash
+
+# omarchy:summary=Show a recorded EvilMaid Watch incident and open its photo
+# omarchy:args=[<incident-id>|latest] [--no-open] [--copy-to <dir>]
+# omarchy:examples=omarchy-emw-show | omarchy-emw-show latest --copy-to ~/Pictures
+# omarchy:requires-sudo=true
+
+# Viewing evidence has two awkward parts, both handled here:
+#
+#  1. The evidence directory is 0700 root:root, so an unprivileged viewer
+#     cannot read the photo.
+#  2. This therefore runs under sudo - but a GUI app started as root has no
+#     Wayland display and no session bus, so imv would fail to open.
+#
+# So: read as root, stage a copy owned by the invoking user, then drop back to
+# that user to display it.
+
+set -euo pipefail
+
+readonly LIB_DIR=${OMARCHY_EMW_LIB:-/usr/local/lib/omarchy-emw}
+# shellcheck source=../lib/emw-common.sh
+source "$LIB_DIR/emw-common.sh"
+
+if ((EUID != 0)); then
+  echo "omarchy-emw-show needs root to read the evidence store: sudo $0 $*" >&2
+  exit 1
+fi
+
+target="latest"
+open_it=true
+copy_to=""
+
+while (($# > 0)); do
+  case $1 in
+  --no-open)
+    open_it=false
+    shift
+    ;;
+  --copy-to)
+    copy_to=${2:-}
+    shift 2
+    ;;
+  *)
+    target=$1
+    shift
+    ;;
+  esac
+done
+
+evidence_dir=$(conf_get EVIDENCE_DIR /var/lib/omarchy-emw)
+readonly INCIDENTS="$evidence_dir/incidents"
+
+[[ -d $INCIDENTS ]] || {
+  echo "no incidents directory at $INCIDENTS" >&2
+  exit 69
+}
+
+# --- Resolve the incident --------------------------------------------------
+if [[ $target == "latest" ]]; then
+  # Incident ids are UTC timestamps, so lexical order is chronological order.
+  incident=$(find "$INCIDENTS" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort | tail -1)
+  [[ -n $incident ]] || {
+    echo "no incidents recorded yet" >&2
+    exit 69
+  }
+else
+  incident=$target
+fi
+
+readonly DIR="$INCIDENTS/$incident"
+[[ -d $DIR ]] || {
+  echo "no such incident: $incident" >&2
+  echo "available:" >&2
+  find "$INCIDENTS" -mindepth 1 -maxdepth 1 -type d -printf '  %f\n' | sort >&2
+  exit 69
+}
+
+# --- Report ----------------------------------------------------------------
+echo "Incident: $incident"
+echo "Path:     $DIR"
+
+if [[ -f $DIR/sources ]]; then
+  echo "Triggers: $(tr '\n' ',' <"$DIR/sources" | sed 's/,$//')"
+fi
+
+# Pull this incident's line out of the append-only log.
+readonly EVENTS_LOG="$evidence_dir/events.log"
+if [[ -r $EVENTS_LOG ]]; then
+  entry=$(grep -F "\"$incident\"" "$EVENTS_LOG" 2>/dev/null | tail -1 || true)
+  [[ -n $entry ]] && echo "Log:      $entry"
+fi
+
+echo "Contents:"
+ls -la "$DIR" | tail -n +2 | sed 's/^/  /'
+
+if [[ -s $DIR/capture.log ]]; then
+  echo "Capture log:"
+  sed 's/^/  /' "$DIR/capture.log"
+fi
+
+readonly PHOTO="$DIR/photo.jpg"
+if [[ ! -s $PHOTO ]]; then
+  echo
+  echo "No photo in this incident."
+  exit 0
+fi
+
+echo
+echo "Photo:    $PHOTO ($(du -h "$PHOTO" | cut -f1))"
+
+# --- Stage a user-readable copy --------------------------------------------
+# Resolve the human who invoked sudo. Falling back to the seated session keeps
+# this working when called from a root shell rather than via sudo.
+viewer_user=${SUDO_USER:-}
+if [[ -z $viewer_user || $viewer_user == "root" ]]; then
+  viewer_user=$(conf_get EMW_USER "")
+fi
+
+if [[ -z $viewer_user ]]; then
+  echo "could not determine which user to display as; copy it yourself from $PHOTO" >&2
+  exit 0
+fi
+
+viewer_uid=$(id -u "$viewer_user" 2>/dev/null || true)
+[[ -n $viewer_uid ]] || {
+  echo "unknown user: $viewer_user" >&2
+  exit 0
+}
+
+if [[ -n $copy_to ]]; then
+  install -d -o "$viewer_user" -m 0755 "$copy_to"
+  dest="$copy_to/emw-$incident.jpg"
+  install -m 0600 -o "$viewer_user" "$PHOTO" "$dest"
+  echo "Copied:   $dest"
+  staged=$dest
+else
+  # Default to the runtime dir: it is tmpfs and cleared on logout, so evidence
+  # does not silently accumulate an unprotected second copy on disk.
+  staged="/run/user/$viewer_uid/emw-$incident.jpg"
+  install -m 0600 -o "$viewer_user" "$PHOTO" "$staged"
+  echo "Staged:   $staged (tmpfs; cleared on logout)"
+fi
+
+$open_it || exit 0
+
+# --- Display as the user ---------------------------------------------------
+wayland_display=$(find "/run/user/$viewer_uid" -maxdepth 1 -name 'wayland-[0-9]*' -printf '%f\n' 2>/dev/null | sort | head -1)
+if [[ -z $wayland_display ]]; then
+  echo "no Wayland session found; open it yourself: $staged" >&2
+  exit 0
+fi
+
+setsid runuser -u "$viewer_user" -- env \
+  XDG_RUNTIME_DIR="/run/user/$viewer_uid" \
+  WAYLAND_DISPLAY="$wayland_display" \
+  imv "$staged" >/dev/null 2>&1 &
+
+echo "Opened in imv."
