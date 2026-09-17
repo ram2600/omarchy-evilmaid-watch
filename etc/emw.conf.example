@@ -62,6 +62,12 @@ NTFY_TOKEN=
 # Desktop toast on the local session.
 DESKTOP_NOTIFY=true
 
+# Toast even when the incident turned out to be you (verdict benign/attended).
+# Off by default on purpose: a toast for every lid open you make yourself
+# trains you to dismiss them, and the one that matters is then the one you
+# swipe away out of habit.
+NOTIFY_ON_BENIGN=false
+
 # --- Storage --------------------------------------------------------------
 EVIDENCE_DIR=/var/lib/omarchy-emw
 RETAIN_DAYS=30

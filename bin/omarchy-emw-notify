@@ -100,7 +100,20 @@ fi
 # user's DND swallows is worse than no alert, because they would trust it.
 # omarchy-crash-watch relies on exactly this for the same reason.
 notify_args=(--urgency "$urgency" --glyph "$EMW_GLYPH")
-[[ -n $image && -f $image ]] && notify_args+=(--image "$image")
+
+# The notification server runs as the desktop user and reads the image path
+# itself. Evidence lives in a 0700 root directory, so passing that path
+# directly yields a toast with a silently missing thumbnail. Stage a copy the
+# user can actually read, in their tmpfs runtime dir so it does not persist as
+# an unprotected second copy on disk.
+if [[ -n $image && -f $image ]]; then
+  staged="/run/user/$session_uid/emw-notify-$(basename "$image")"
+  if install -m 0600 -o "$EMW_USER" "$image" "$staged" 2>/dev/null; then
+    notify_args+=(--image "$staged")
+  else
+    echo "emw-notify: could not stage $image for the notification server" >&2
+  fi
+fi
 
 # Headline and description stay positional. They can contain attacker-derived
 # text (a USB device's product string), and omarchy-notification-send passes

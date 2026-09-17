@@ -92,6 +92,20 @@ printf '%s %s\n' "$now" "$incident_dir" >"$STATE_FILE"
 
 log_journal "new incident $stamp-$$"
 
+# Lock state is read NOW, before the camera warms up. Capture takes a couple of
+# seconds, and if the legitimate user is already typing their password the hint
+# could flip to "no" mid-capture - which would make an intruder incident look
+# attended. The verdict must be based on the state at the moment of the
+# trigger, not at the moment we got round to asking.
+session_id=$(emw_session_id || true)
+if [[ -n $session_id ]]; then
+  locked_at_trigger=$(emw_locked "$session_id")
+else
+  locked_at_trigger=no-session
+fi
+printf '%s\n' "$locked_at_trigger" >"$incident_dir/locked-at-trigger"
+log_journal "locked at trigger: $locked_at_trigger"
+
 # --- Append to the tamper-evident log --------------------------------------
 # events.log is chattr +a where the filesystem supports it, so this append
 # succeeds but a rewrite does not. Root can clear that attribute, so this is
@@ -122,7 +136,107 @@ if conf_bool CAPTURE_PHOTO true; then
   fi
 fi
 
+# --- Grace period ----------------------------------------------------------
+# This is the trusted-unlock mechanism, standing in for DoNotDisturb's Touch ID
+# mode (Asahi has no fingerprint reader). The rule: if whoever opened the lid
+# can unlock the session within the grace window, they are you.
+grace=$(conf_get GRACE_SECONDS 60)
+[[ $grace =~ ^[0-9]+$ ]] || grace=60
+
+case $locked_at_trigger in
+no-session)
+  # Triggered with nobody logged in - a boot or a tty-only state. Nothing can
+  # "unlock" to clear this, so it stands on its own as suspicious.
+  verdict=unattended
+  ;;
+no)
+  # The session was already unlocked, so the machine was open to anyone
+  # walking past and a grace period cannot distinguish you from an intruder.
+  # Default assumes an unlocked machine was one you were sitting at.
+  if conf_bool ALERT_WHEN_UNLOCKED false; then
+    verdict=intruder
+  else
+    verdict=attended
+  fi
+  ;;
+*)
+  if conf_bool TRUSTED_UNLOCK true; then
+    log_journal "locked; waiting up to ${grace}s for a trusted unlock"
+    verdict=intruder
+    deadline=$(($(date +%s) + grace))
+    while (($(date +%s) < deadline)); do
+      if [[ $(emw_locked "$session_id") == "no" ]]; then
+        verdict=benign
+        break
+      fi
+      sleep 2
+    done
+  else
+    verdict=intruder
+  fi
+  ;;
+esac
+
+log_journal "verdict: $verdict"
+
+# --- Record the verdict ----------------------------------------------------
+photo_path=""
+[[ -s $incident_dir/photo.jpg ]] && photo_path="$incident_dir/photo.jpg"
+
+jq -n \
+  --arg incident "$(basename "$incident_dir")" \
+  --arg verdict "$verdict" \
+  --arg locked "$locked_at_trigger" \
+  --arg sources "$(tr '\n' ',' <"$incident_dir/sources" | sed 's/,$//')" \
+  --arg photo "$photo_path" \
+  --arg closed "$(date -Is)" \
+  '{incident: $incident, verdict: $verdict, locked_at_trigger: $locked,
+    sources: $sources, photo: $photo, closed: $closed}' \
+  >"$incident_dir/verdict.json"
+
+jq -n -c \
+  --arg ts "$(date -Is)" \
+  --arg incident "$(basename "$incident_dir")" \
+  --arg verdict "$verdict" \
+  --arg host "$(hostname)" \
+  '{ts: $ts, incident: $incident, host: $host, event: "closed", verdict: $verdict}' \
+  >>"$EVENTS_LOG"
+
+# --- Notify ----------------------------------------------------------------
+# A benign incident is deliberately quiet by default: if every lid open you
+# make yourself produces a toast, you will stop reading them, and the one that
+# matters will be the one you swipe away out of habit.
+notify=false
+case $verdict in
+intruder | unattended) notify=true ;;
+attended | benign) conf_bool NOTIFY_ON_BENIGN false && notify=true ;;
+esac
+
+if conf_bool DESKTOP_NOTIFY true && [[ $notify == "true" ]]; then
+  sources_list=$(tr '\n' ',' <"$incident_dir/sources" | sed 's/,$//')
+  case $verdict in
+  intruder)
+    headline="Lid opened while locked"
+    body="Not unlocked within ${grace}s. Trigger: ${sources_list}."
+    urgency=critical
+    ;;
+  unattended)
+    headline="Physical access with no session"
+    body="Trigger: ${sources_list}."
+    urgency=critical
+    ;;
+  *)
+    headline="Physical access recorded"
+    body="Verdict: ${verdict}. Trigger: ${sources_list}."
+    urgency=normal
+    ;;
+  esac
+
+  notify_args=("$headline" "$body" --urgency "$urgency")
+  [[ -n $photo_path ]] && notify_args+=(--image "$photo_path")
+  omarchy-emw-notify "${notify_args[@]}" || log_journal "desktop notification failed"
+fi
+
 log_journal "incident recorded at $incident_dir"
 
-# Phases 3-6 attach here: grace period, classification, desktop notification,
-# remote alert and root hooks.
+# Phases 4-6 attach here: remote alert and root hooks.

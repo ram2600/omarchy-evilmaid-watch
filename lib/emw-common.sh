@@ -39,3 +39,39 @@ emw_user_home() {
   [[ -n $user ]] || return 1
   getent passwd "$user" | cut -d: -f6
 }
+
+# emw_session_id
+# The desktop user's seated, user-class session. A user typically has several
+# sessions - here a seat0 tty session and a seatless "manager" one - and only
+# the seated one has a lock screen, so matching on Class and Seat matters.
+# Prints nothing and returns 1 when there is no graphical session at all.
+emw_session_id() {
+  local want sid props name
+  want=$(conf_get EMW_USER "")
+  while read -r sid _rest; do
+    [[ -n $sid ]] || continue
+    props=$(loginctl show-session "$sid" -p Name -p Class -p Seat 2>/dev/null) || continue
+    [[ $props == *"Class=user"* ]] || continue
+    [[ $props == *"Seat=seat"* ]] || continue
+    name=${props#*Name=}
+    name=${name%%$'\n'*}
+    if [[ -z $want || $name == "$want" ]]; then
+      printf '%s' "$sid"
+      return 0
+    fi
+  done < <(loginctl list-sessions --no-legend 2>/dev/null || true)
+  return 1
+}
+
+# emw_locked <session-id>
+# Prints yes | no | unknown. LockedHint is logind's view of whether the
+# session's lock screen is up; Quickshell sets it through logind like any
+# other locker, so this works without knowing which locker is in use.
+emw_locked() {
+  local sid=$1 hint
+  hint=$(loginctl show-session "$sid" -p LockedHint --value 2>/dev/null || true)
+  case $hint in
+  yes | no) printf '%s' "$hint" ;;
+  *) printf 'unknown' ;;
+  esac
+}
