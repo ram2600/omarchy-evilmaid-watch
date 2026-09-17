@@ -105,9 +105,21 @@ emw_locked() {
     done
   fi
 
-  # Fallback for a session that is not this shell. Note LockedHint is NOT
-  # trusted above: Quickshell never sets it, so a definite-looking "no" from
-  # logind would silently override a correct "locked" answer.
+  # We get here only when the IPC never answered.
+  #
+  # If this IS a Wayland session, refuse to fall back to LockedHint. Quickshell
+  # never sets it, so logind would confidently answer "no" - and "no" routes
+  # straight to the attended verdict, which alerts nobody. A shell too busy to
+  # reply would therefore silently disarm the watcher at precisely the moment
+  # something is happening. Report "unknown" instead, which callers treat as
+  # locked and which still runs the grace period.
+  if [[ -n $uid ]] && compgen -G "/run/user/$uid/wayland-[0-9]*" >/dev/null 2>&1; then
+    printf 'unknown'
+    return 0
+  fi
+
+  # No Wayland session at all: a different locker may well maintain LockedHint,
+  # so it is the best signal available here.
   hint=$(loginctl show-session "$sid" -p LockedHint --value 2>/dev/null || true)
   case $hint in
   yes | no) printf '%s' "$hint" ;;
