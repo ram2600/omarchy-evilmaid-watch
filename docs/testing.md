@@ -1,0 +1,117 @@
+# Testing EvilMaid Watch
+
+## Read this first: do not test the lock screen the obvious way
+
+`/etc/pam.d/omarchy-lock-password` ships Arch's default
+`pam_faillock deny=10 unlock_time=120`. Typing wrong passwords to test the
+failed-unlock trigger spends that budget, and two things make it worse than it
+sounds:
+
+- Attempts made **during** a lockout still count, and the 120-second timer runs
+  from the *most recent* attempt. Retrying keeps you locked out.
+- The lock screen reports a lockout the same way it reports a wrong password,
+  so a correct password being rejected looks like you mistyping it.
+
+If it ever stops accepting a password you know is right: **stop typing for two
+minutes.** Tallies live in `/var/run/faillock` (tmpfs), so a reboot also clears
+them — but waiting is faster than the reboot that testing this cost once.
+
+Use `--simulate` instead. If you do want a live run, type exactly three wrong
+passwords — the EMW threshold, well under faillock's ten — then take your hands
+off the keyboard.
+
+## `--simulate`
+
+```bash
+sudo omarchy-emw-faillock --simulate --dry    # matcher + tally only, no incident
+sudo omarchy-emw-faillock --simulate          # + escalation through the real trigger
+sudo omarchy-emw-faillock --simulate --live   # + journald and the deployed daemon
+```
+
+All three start with a matcher self-test over synthetic lines copied from real
+journal output, including the cases that must **not** fire:
+
+| Case | Expected |
+|---|---|
+| Lock screen `pam_unix` authentication failure | fire |
+| Lock screen `pam_faillock` lockout notice | fire |
+| Lock screen audit `AUDIT1100 … res=failed` | fire |
+| `sudo` mistyped password (`pam_unix` form) | ignore |
+| `sudo` mistyped password (audit form) | ignore |
+| Normal session start | ignore |
+| Successful unlock | ignore |
+| Lock screen starting up | ignore |
+
+The simulation drives `consume_line` — the same function the daemon's read loop
+calls. It is deliberately not a reimplementation of the tally: a test that
+reimplements its subject only proves the reimplementation works.
+
+`--live` writes lines tagged `omarchy-emw-simulate` whose text says
+`SIMULATED`. They carry the strings the matcher keys on, so the running daemon
+reacts exactly as it would to a real failure, but they can never be mistaken
+for genuine PAM failures by whoever reads that journal afterwards. It then
+waits `GRACE_SECONDS + 20` for the verdict rather than reporting early.
+
+## `--probe`
+
+```bash
+sudo omarchy-emw-faillock --probe 120
+```
+
+Prints every line the watcher would act on (`MATCH`) and every line merely
+mentioning the lock PAM service (`near`), firing nothing. Use it when the
+matcher needs to be checked against a distribution or lock screen whose wording
+differs.
+
+## Other trigger paths
+
+```bash
+sudo omarchy-emw-trigger manual     # full incident, no lock screen involved
+```
+
+Lid and resume are best tested for real: lock the screen, close the lid, wait
+past `GRACE_SECONDS`. Both firing at once is expected and should produce **one**
+incident — the journal will say `coalesced into …`.
+
+## Testing the alert fallback
+
+The spool path is what saves an alert raised with no network. To exercise it,
+blackhole the API and send:
+
+```bash
+echo "127.0.0.1 api.telegram.org" >> /etc/hosts
+sudo omarchy-emw-alert /var/lib/omarchy-emw/incidents/<id> --verdict intruder
+# expect: "telegram send failed" then "spooled to …"
+```
+
+Then restore `/etc/hosts` and drain:
+
+```bash
+sudo systemctl stop omarchy-emw-spool.timer
+sudo omarchy-emw-spool     # expect: "sent via telegram", "1/1 delivered"
+sudo systemctl start omarchy-emw-spool.timer
+```
+
+Two traps, both of which produced false failures the first time:
+
+1. **`nsswitch.conf` puts `resolve` ahead of `files` with `[!UNAVAIL=return]`,**
+   so lookups go through systemd-resolved's in-memory copy of `/etc/hosts`.
+   `resolvectl flush-caches` empties the DNS cache without forcing a re-read of
+   that file, so a send fired immediately after the revert still sees the
+   blackhole. Wait until `getent hosts api.telegram.org` returns a real address.
+2. **`systemctl start` on an already-running oneshot joins the in-flight run**
+   rather than starting a fresh one. If the timer's own pass is mid-flight, its
+   result gets reported as yours. Stop the timer for the duration, or call
+   `omarchy-emw-spool` directly.
+
+## Verifying the toast photo
+
+The toast thumbnail is staged outside the 0700 evidence directory, so an
+incident should leave a readable copy:
+
+```bash
+ls -l /run/omarchy-emw/toast-<incident-id>.jpg   # 0600, owned by the desktop user
+```
+
+The directory is mode 0711 — openable by path, not listable — so `ls` of the
+directory itself failing is correct behaviour, not an error.
