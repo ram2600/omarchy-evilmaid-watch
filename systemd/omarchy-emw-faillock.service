@@ -1,0 +1,25 @@
+[Unit]
+Description=Omarchy EvilMaid Watch failed-unlock watcher
+After=systemd-journald.service omarchy-emw.service
+Wants=systemd-journald.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/omarchy-emw-faillock
+Restart=always
+RestartSec=5
+
+# Follows the journal and shells out to the trigger; needs the same write
+# access as the main watcher for the evidence store and the session bus.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/omarchy-emw /run/user
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+KillMode=control-group
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

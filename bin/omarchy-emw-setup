@@ -342,8 +342,43 @@ send_test() {
   rm -rf "$dir"
 }
 
+# Tunables that are safe to change from the CLI. Credentials are deliberately
+# excluded: they belong to the interactive flows, which never put a secret in
+# argv where the process table and shell history would both capture it.
+set_value() {
+  local key=${1:-} value=${2:-}
+  case $key in
+  GRACE_SECONDS | DEBOUNCE_SECONDS | RETAIN_DAYS | SPOOL_MAX_AGE_HOURS | \
+    PHOTO_WARMUP_FRAMES | AUTH_FAILURE_THRESHOLD | AUTH_FAILURE_WINDOW)
+    [[ $value =~ ^[0-9]+$ ]] || {
+      echo "$key must be a whole number" >&2
+      exit 64
+    }
+    ;;
+  ENABLED | PASSIVE_MODE | TRUSTED_UNLOCK | CAPTURE_PHOTO | DESKTOP_NOTIFY | \
+    NOTIFY_ON_BENIGN | ALERT_WHEN_UNLOCKED)
+    [[ $value == "true" || $value == "false" ]] || {
+      echo "$key must be true or false" >&2
+      exit 64
+    }
+    ;;
+  TRIGGERS | PHOTO_RESOLUTION | CAMERA_DEVICE) ;;
+  "")
+    echo "usage: omarchy-emw-setup set <KEY> <VALUE>" >&2
+    exit 64
+    ;;
+  *)
+    echo "$key is not a CLI-settable key (credentials use the telegram/ntfy flows)" >&2
+    exit 64
+    ;;
+  esac
+  conf_set "$key" "$value"
+  echo "$key=$value"
+}
+
 case ${1:-} in
 telegram) setup_telegram ;;
+set) set_value "${2:-}" "${3:-}" ;;
 ntfy) setup_ntfy ;;
 channel) setup_channel ;;
 show) show_config ;;
@@ -355,6 +390,7 @@ usage: omarchy-emw-setup <command>
   telegram   Configure Telegram alerts (bot token + chat id)
   ntfy       Configure ntfy alerts (server + topic)
   channel    Choose which backends are active: none|telegram|ntfy|both
+  set K V    Set a tunable, e.g. set GRACE_SECONDS 20
   show       Show current alert settings, with secrets redacted
   test       Send a test alert through the configured backends
 EOF

@@ -24,12 +24,18 @@ PASSIVE_MODE=false
 # logged as benign and no remote alert goes out. This replaces upstream's
 # touchIDMode, since Touch ID is not available under Asahi.
 TRUSTED_UNLOCK=true
-GRACE_SECONDS=60
+GRACE_SECONDS=20
 
 # If the session was not locked when the trigger fired, a grace period cannot
 # tell you from an intruder. Default assumes an unlocked machine was one you
 # were actively using.
 ALERT_WHEN_UNLOCKED=false
+
+# How many failed unlock attempts within AUTH_FAILURE_WINDOW seconds count as
+# one incident. Someone fat-fingering their own password once is not an
+# intrusion; three misses in two minutes at a locked screen is a signal.
+AUTH_FAILURE_THRESHOLD=3
+AUTH_FAILURE_WINDOW=120
 
 # --- Capture --------------------------------------------------------------
 CAPTURE_PHOTO=true

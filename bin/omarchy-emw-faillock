@@ -1,0 +1,113 @@
+#!/bin/bash
+
+# omarchy:summary=Watch for failed unlock attempts and raise an EvilMaid Watch incident
+# omarchy:args=[--probe [seconds]]
+# omarchy:examples=omarchy-emw-faillock --probe 60
+# omarchy:hidden=true
+# omarchy:requires-sudo=true
+
+# Someone standing at your locked screen guessing passwords is the clearest
+# evil-maid signal there is - it is the only trigger here that cannot happen by
+# accident.
+#
+# --probe prints every line this would consider, without firing anything. The
+# exact wording of a failed unlock depends on how Quickshell's PAM subprocess
+# reports it, so the matcher below is deliberately broad and the probe exists
+# to confirm it against reality rather than assumption.
+
+set -euo pipefail
+
+readonly LIB_DIR=${OMARCHY_EMW_LIB:-/usr/local/lib/omarchy-emw}
+# shellcheck source=../lib/emw-common.sh
+source "$LIB_DIR/emw-common.sh"
+
+probe=false
+probe_seconds=120
+if [[ ${1:-} == "--probe" ]]; then
+  probe=true
+  [[ ${2:-} =~ ^[0-9]+$ ]] && probe_seconds=$2
+fi
+
+readonly PAM_SERVICE=omarchy-lock-password
+
+# A failed unlock shows up in one of several shapes depending on which layer
+# reports it, so all of them are matched:
+#   - pam_unix's own "authentication failure" line, tagged with the PAM service
+#   - pam_faillock recording or denying an attempt for that service
+#   - the audit subsystem's USER_AUTH record with res=failed
+#   - Quickshell's PAM subprocess reporting the attempt itself
+readonly FAIL_PATTERN='(authentication failure|auth could not identify|Failed password|pam_faillock.*(Consecutive|Denying)|op=PAM:authentication.*res=failed|pam.*(fail|denied))'
+
+is_failure() {
+  local line=$1
+  [[ $line =~ $FAIL_PATTERN ]] || return 1
+
+  # Scope to the lock screen. Without this, every mistyped sudo password in a
+  # terminal raises an intruder incident - and mistyping sudo is routine.
+  # pam_unix and pam_faillock both name the PAM service, which is the reliable
+  # discriminator.
+  [[ $line == *"$PAM_SERVICE"* ]] && return 0
+
+  # Audit records do not carry the PAM service name. journald renders USER_AUTH
+  # as AUDIT1100, not as the string "USER_AUTH", so match the numeric type.
+  # exe= is what separates a lock-screen failure from a sudo one.
+  if [[ $line == *AUDIT1100* && $line == *"res=failed"* ]]; then
+    [[ $line == *sudo* ]] && return 1
+    return 0
+  fi
+
+  return 1
+}
+
+if $probe; then
+  echo "Probing for failed-unlock log lines for ${probe_seconds}s."
+  echo "Lock the screen and type a WRONG password, then unlock normally."
+  echo "Anything this watcher would consider is printed below."
+  echo "PAM service filter: $PAM_SERVICE"
+  echo "---"
+  timeout "$probe_seconds" journalctl -f -n0 -o short-iso --no-pager 2>/dev/null |
+    while IFS= read -r line; do
+      if is_failure "$line"; then
+        echo "MATCH  $line"
+      elif [[ $line == *"$PAM_SERVICE"* ]]; then
+        echo "near   $line"
+      fi
+    done
+  echo "---"
+  echo "Probe finished."
+  exit 0
+fi
+
+threshold=$(conf_get AUTH_FAILURE_THRESHOLD 3)
+window=$(conf_get AUTH_FAILURE_WINDOW 120)
+[[ $threshold =~ ^[0-9]+$ ]] || threshold=3
+[[ $window =~ ^[0-9]+$ ]] || window=120
+
+echo "faillock watcher: $threshold failure(s) within ${window}s raises an incident" >&2
+
+count=0
+first_seen=0
+
+# -n0 so a restart does not replay historical failures and fire on boot.
+journalctl -f -n0 -o short-iso --no-pager 2>/dev/null |
+  while IFS= read -r line; do
+    is_failure "$line" || continue
+
+    now=$(date +%s)
+    # Reset the tally once the window has passed, so isolated typos over an
+    # afternoon never accumulate into a false intrusion.
+    if ((first_seen == 0 || now - first_seen > window)); then
+      first_seen=$now
+      count=0
+    fi
+
+    count=$((count + 1))
+    echo "faillock: failed unlock $count/$threshold within ${window}s" >&2
+
+    if ((count >= threshold)); then
+      echo "faillock: threshold reached, raising incident" >&2
+      omarchy-emw-trigger faillock || true
+      count=0
+      first_seen=0
+    fi
+  done
