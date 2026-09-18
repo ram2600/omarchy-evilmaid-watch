@@ -12,7 +12,12 @@ RestartSec=5
 # Follows the journal and shells out to the trigger; needs the same write
 # access as the main watcher for the evidence store and the session bus.
 ProtectSystem=strict
-ReadWritePaths=/var/lib/omarchy-emw /run/user
+ReadWritePaths=/var/lib/omarchy-emw
+# See omarchy-emw.service: /run/user/$uid is read-only in here, so the toast
+# photo is staged in this unit's own runtime directory instead.
+RuntimeDirectory=omarchy-emw
+RuntimeDirectoryMode=0711
+RuntimeDirectoryPreserve=yes
 ProtectHome=read-only
 PrivateTmp=yes
 ProtectKernelModules=yes

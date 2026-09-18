@@ -104,14 +104,33 @@ notify_args=(--urgency "$urgency" --glyph "$EMW_GLYPH")
 # The notification server runs as the desktop user and reads the image path
 # itself. Evidence lives in a 0700 root directory, so passing that path
 # directly yields a toast with a silently missing thumbnail. Stage a copy the
-# user can actually read, in their tmpfs runtime dir so it does not persist as
-# an unprotected second copy on disk.
+# user can read.
+#
+# NOT in the user's own /run/user/$uid: logind mounts that tmpfs after these
+# units start, and it lands READ-ONLY inside their mount namespace even with
+# ReadWritePaths=/run/user - that covers the parent directory, not the later
+# submount. Writes there failed silently while the toast still delivered,
+# because connect()ing to the bus socket is not a filesystem write. Verified
+# with `systemd-run` replicating the unit sandbox: ro,nosuid,nodev...uid=1001.
+#
+# RuntimeDirectory= is the supported way to get a writable tmpfs directory
+# inside the namespace: /run/omarchy-emw, mode 0711 so the daemon can open a
+# known path without the directory being listable, and gone at reboot.
+stage_dir=${RUNTIME_DIRECTORY:-/run/omarchy-emw}
+stage_dir=${stage_dir%%:*}
 if [[ -n $image && -f $image ]]; then
-  staged="/run/user/$session_uid/emw-notify-$(basename "$image")"
-  if install -m 0600 -o "$EMW_USER" "$image" "$staged" 2>/dev/null; then
+  mkdir -p "$stage_dir" 2>/dev/null && chmod 0711 "$stage_dir" 2>/dev/null || true
+  staged="$stage_dir/toast-$(basename "$(dirname "$image")").jpg"
+  # Report why it failed. A silently thumbnail-less toast looks like a working
+  # alert, so a swallowed errno here costs more than the noise of logging it.
+  if stage_err=$(install -m 0600 -o "$EMW_USER" "$image" "$staged" 2>&1); then
     notify_args+=(--image "$staged")
+    # The daemon reads the file after we exit, so it cannot be removed here.
+    # Sweep older copies instead: no evidence lingers beyond the hour, and the
+    # whole directory is tmpfs that dies at reboot.
+    find "$stage_dir" -maxdepth 1 -name 'toast-*.jpg' -mmin +60 -delete 2>/dev/null || true
   else
-    echo "emw-notify: could not stage $image for the notification server" >&2
+    echo "emw-notify: could not stage $image for the notification server: ${stage_err:-unknown error}" >&2
   fi
 fi
 
