@@ -129,6 +129,14 @@ Unlock within the grace window and it stays silent; walk away and it escalates.
 
 NOTE: capturing lights the camera LED. That is hardware-wired on this machine
 and is intended - the same deterrent behaviour as macOS DoNotDisturb.
-
-Remote alerts are off until you set ALERT_CHANNEL in $CONF_FILE.
 EOF
+
+# Report the alerting state rather than asserting one. This line used to say
+# alerts were off unconditionally, including on machines that had just sent a
+# Telegram - an install message that lies about whether you will be told.
+alert_channel=$(sed -n 's/^[[:space:]]*ALERT_CHANNEL=\([^#]*\).*/\1/p' "$CONF_FILE" 2>/dev/null | tr -d '"'"'"'[:space:]' | head -1)
+if [[ -n ${alert_channel:-} && $alert_channel != none ]]; then
+  echo "Remote alerts: $alert_channel (configured in $CONF_FILE)."
+else
+  echo "Remote alerts are off until you set ALERT_CHANNEL in $CONF_FILE."
+fi
