@@ -150,15 +150,21 @@ emw_shell_as_user() {
     return
   fi
 
-  # setpriv, not runuser. runuser opens a full PAM session for every call, and
-  # the grace loop polls for a minute - one incident produced 722 journal lines
-  # of pam_unix/pam_lastlog2 chatter, drowning the security log it is supposed
-  # to be writing. setpriv only changes credentials: no PAM, no session, no log
-  # entry. runuser stays as a fallback in case setpriv is unavailable.
+  # setpriv, not runuser. runuser opens a full PAM session per call, and the
+  # grace loop polls for a minute - one incident produced 722 journal lines of
+  # pam_unix/pam_lastlog2 chatter, drowning the security log it exists to
+  # write. setpriv only changes credentials: no PAM, no session, no log entry.
+  #
+  # The choice is made on whether setpriv EXISTS, never on whether the command
+  # it ran succeeded. Falling back on a non-zero exit was the bug: during the
+  # grace period the shell usually does not answer, so every poll ran setpriv,
+  # saw failure, and then re-ran the same doomed call through runuser - keeping
+  # the PAM spam and doubling the work.
   gid=$(id -g "$user" 2>/dev/null || echo "$uid")
-  if setpriv --reuid="$uid" --regid="$gid" --init-groups -- \
-    env XDG_RUNTIME_DIR="/run/user/$uid" omarchy-shell "$@" 2>/dev/null; then
-    return 0
+  if command -v setpriv >/dev/null 2>&1; then
+    setpriv --reuid="$uid" --regid="$gid" --init-groups -- \
+      env XDG_RUNTIME_DIR="/run/user/$uid" omarchy-shell "$@"
+    return
   fi
 
   runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" omarchy-shell "$@"
