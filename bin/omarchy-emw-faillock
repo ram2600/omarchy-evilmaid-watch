@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # omarchy:summary=Watch for failed unlock attempts and raise an EvilMaid Watch incident
-# omarchy:args=[--probe [seconds]]
-# omarchy:examples=omarchy-emw-faillock --probe 60
+# omarchy:args=[--probe [seconds]] [--simulate [--dry|--live]]
+# omarchy:examples=omarchy-emw-faillock --simulate
 # omarchy:hidden=true
 # omarchy:requires-sudo=true
 
@@ -14,6 +14,13 @@
 # exact wording of a failed unlock depends on how Quickshell's PAM subprocess
 # reports it, so the matcher below is deliberately broad and the probe exists
 # to confirm it against reality rather than assumption.
+#
+# --simulate exercises this trigger WITHOUT typing wrong passwords at the lock
+# screen. That matters: pam_faillock locks the account after 10 failures and
+# further attempts restart its 120s timer, so testing this the obvious way once
+# cost a hard reboot. The simulation drives the same matcher and the same
+# counting function the daemon uses - not a reimplementation of them, which
+# would only prove the reimplementation works.
 
 set -euo pipefail
 
@@ -23,10 +30,34 @@ source "$LIB_DIR/emw-common.sh"
 
 probe=false
 probe_seconds=120
-if [[ ${1:-} == "--probe" ]]; then
-  probe=true
-  [[ ${2:-} =~ ^[0-9]+$ ]] && probe_seconds=$2
-fi
+simulate=false
+sim_mode=trigger # trigger | dry | live
+
+while (($# > 0)); do
+  case $1 in
+  --probe)
+    probe=true
+    [[ ${2:-} =~ ^[0-9]+$ ]] && { probe_seconds=$2; shift; }
+    shift
+    ;;
+  --simulate)
+    simulate=true
+    shift
+    ;;
+  --dry)
+    sim_mode=dry
+    shift
+    ;;
+  --live)
+    sim_mode=live
+    shift
+    ;;
+  *)
+    echo "usage: omarchy-emw-faillock [--probe [seconds]] [--simulate [--dry|--live]]" >&2
+    exit 64
+    ;;
+  esac
+done
 
 readonly PAM_SERVICE=omarchy-lock-password
 
@@ -78,6 +109,9 @@ if $probe; then
   exit 0
 fi
 
+dry_run=false
+[[ $sim_mode == dry ]] && dry_run=true
+
 threshold=$(conf_get AUTH_FAILURE_THRESHOLD 3)
 window=$(conf_get AUTH_FAILURE_WINDOW 120)
 [[ $threshold =~ ^[0-9]+$ ]] || threshold=3
@@ -85,29 +119,137 @@ window=$(conf_get AUTH_FAILURE_WINDOW 120)
 
 echo "faillock watcher: $threshold failure(s) within ${window}s raises an incident" >&2
 
+# --- simulation ------------------------------------------------------------
+# Every synthetic line below is copied from real journal output on this machine,
+# including the ones that must NOT fire. Mistyping a sudo password is routine,
+# and an intruder alert for it would teach you to ignore the alert that matters.
+sim_user=${SUDO_USER:-$(id -un)}
+
+sim_cases() {
+  cat <<SIMEOF
+fire|lock screen: pam_unix authentication failure|quickshell[9001]: pam_unix($PAM_SERVICE:auth): authentication failure; logname=$sim_user uid=1001 euid=1001 tty= ruser= rhost=  user=$sim_user
+fire|lock screen: pam_faillock lockout notice|quickshell[9002]: pam_faillock($PAM_SERVICE:auth): Consecutive login failures for user $sim_user account temporarily locked
+fire|lock screen: audit USER_AUTH record|audit[9003]: AUDIT1100 pid=9003 uid=1001 auid=1001 msg='op=PAM:authentication acct="$sim_user" exe="/usr/bin/quickshell" hostname=? addr=? terminal=? res=failed'
+ignore|sudo: mistyped password|sudo[9004]: pam_unix(sudo:auth): authentication failure; logname=$sim_user uid=1001 euid=0 tty=/dev/pts/1 ruser=$sim_user rhost=  user=$sim_user
+ignore|sudo: audit record for the same|audit[9005]: AUDIT1100 pid=9005 uid=1001 auid=1001 msg='op=PAM:authentication acct="$sim_user" exe="/usr/bin/sudo" hostname=? addr=? terminal=/dev/pts/1 res=failed'
+ignore|normal session start|runuser[9006]: pam_unix(runuser:session): session opened for user $sim_user(uid=1001) by $sim_user(uid=0)
+ignore|successful unlock|quickshell[9007]: pam_unix($PAM_SERVICE:session): session opened for user $sim_user(uid=1001) by (uid=0)
+ignore|lock screen starting up|omarchy-shell[9008]: quickshell.service.pam.subprocess: Starting pam session for user "$sim_user" with config "$PAM_SERVICE" in dir "/etc/pam.d"
+SIMEOF
+}
+
+run_simulation() {
+  local expect desc line verdict passes=0 failures=0 i
+
+  echo "faillock simulation: matcher self-test"
+  while IFS='|' read -r expect desc line; do
+    [[ -n ${expect:-} ]] || continue
+    if is_failure "$line"; then verdict=fire; else verdict=ignore; fi
+    if [[ $verdict == "$expect" ]]; then
+      printf '  ok    %-40s -> %s\n' "$desc" "$verdict"
+      passes=$((passes + 1))
+    else
+      printf '  FAIL  %-40s -> %s (expected %s)\n' "$desc" "$verdict" "$expect"
+      failures=$((failures + 1))
+    fi
+  done < <(sim_cases)
+  echo "  $passes passed, $failures failed"
+  if ((failures > 0)); then
+    echo "faillock simulation: matcher is wrong - not escalating" >&2
+    return 1
+  fi
+
+  if [[ $sim_mode == live ]]; then
+    # Highest fidelity: write lines the RUNNING daemon will read, so the test
+    # covers journald delivery and the deployed unit rather than this process.
+    # Tagged and labelled SIMULATED - a synthetic line that passed for a real
+    # PAM failure would corrupt the very log an evil-maid investigation reads.
+    systemctl is-active --quiet omarchy-emw-faillock.service || {
+      echo "faillock simulation: --live needs omarchy-emw-faillock.service running" >&2
+      return 1
+    }
+    local since grace deadline
+    # Anchor the report to this run. Reading a relative window instead would
+    # fold in whatever the daemon logged for an earlier incident.
+    since=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "faillock simulation: injecting $threshold tagged failures for the running daemon"
+    for ((i = 1; i <= threshold; i++)); do
+      logger -t omarchy-emw-simulate -p authpriv.warning \
+        "pam_unix($PAM_SERVICE:auth): authentication failure; SIMULATED by omarchy-emw-faillock --simulate --live; logname=$sim_user uid=1001 euid=1001 tty= ruser= rhost=  user=$sim_user"
+      sleep 1
+    done
+
+    # The incident is not decided until the grace window expires, so a fixed
+    # short wait reports `new incident` and stops - hiding the verdict, the
+    # toast and the alert, which are the parts worth confirming.
+    grace=$(conf_get GRACE_SECONDS 60)
+    [[ $grace =~ ^[0-9]+$ ]] || grace=60
+    echo "faillock simulation: injected; waiting up to $((grace + 20))s for the verdict"
+    deadline=$(($(date +%s) + grace + 20))
+    while (($(date +%s) < deadline)); do
+      journalctl -u omarchy-emw-faillock.service --since "$since" --no-pager 2>/dev/null |
+        grep -q 'incident recorded' && break
+      sleep 2
+    done
+
+    echo "faillock simulation: what the daemon did:"
+    journalctl -u omarchy-emw-faillock.service --since "$since" --no-pager 2>/dev/null |
+      grep -E 'failed unlock|threshold reached|new incident|photo|verdict|toast|alert|incident recorded' |
+      sed 's/^[A-Z][a-z][a-z] [0-9 ][0-9] //; s/^/  /' || true
+    return 0
+  fi
+
+  echo "faillock simulation: feeding $threshold failures through the live counter"
+  $dry_run && echo "  (--dry: will stop short of raising an incident)"
+  while IFS='|' read -r expect desc line; do
+    [[ ${expect:-} == fire ]] || continue
+    for ((i = 1; i <= threshold; i++)); do
+      consume_line "$line"
+    done
+    break
+  done < <(sim_cases)
+}
+
 count=0
 first_seen=0
+
+# The counting and escalation logic lives here rather than inline in the read
+# loop so that --simulate drives exactly this code path. A simulation that
+# reimplemented the tally would only ever prove the reimplementation correct.
+consume_line() {
+  local line=$1 now
+  is_failure "$line" || return 0
+
+  now=$(date +%s)
+  # Reset the tally once the window has passed, so isolated typos over an
+  # afternoon never accumulate into a false intrusion.
+  if ((first_seen == 0 || now - first_seen > window)); then
+    first_seen=$now
+    count=0
+  fi
+
+  count=$((count + 1))
+  echo "faillock: failed unlock $count/$threshold within ${window}s" >&2
+
+  if ((count >= threshold)); then
+    if $dry_run; then
+      echo "faillock: threshold reached (--dry: no incident raised)" >&2
+    else
+      echo "faillock: threshold reached, raising incident" >&2
+      omarchy-emw-trigger faillock || true
+    fi
+    count=0
+    first_seen=0
+  fi
+}
+
+if $simulate; then
+  run_simulation
+  exit $?
+fi
 
 # -n0 so a restart does not replay historical failures and fire on boot.
 journalctl -f -n0 -o short-iso --no-pager 2>/dev/null |
   while IFS= read -r line; do
-    is_failure "$line" || continue
-
-    now=$(date +%s)
-    # Reset the tally once the window has passed, so isolated typos over an
-    # afternoon never accumulate into a false intrusion.
-    if ((first_seen == 0 || now - first_seen > window)); then
-      first_seen=$now
-      count=0
-    fi
-
-    count=$((count + 1))
-    echo "faillock: failed unlock $count/$threshold within ${window}s" >&2
-
-    if ((count >= threshold)); then
-      echo "faillock: threshold reached, raising incident" >&2
-      omarchy-emw-trigger faillock || true
-      count=0
-      first_seen=0
-    fi
+    consume_line "$line"
   done
