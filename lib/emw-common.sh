@@ -100,7 +100,10 @@ emw_locked() {
     # loop runs anyway and re-probes every 2s for the full window. That loop is
     # where a shell recovering from resume gets the time it needs.
     for ((attempt = 0; attempt < tries; attempt++)); do
-      answer=$(emw_shell_as_user "$user" "$uid" lock isLocked 2>/dev/null || true)
+      # Fold stderr in: a working call prints exactly true or false, so this
+      # costs nothing on success and keeps the diagnosis on failure. Discarding
+      # it is how a missing OMARCHY_PATH went unnoticed for every incident.
+      answer=$(emw_shell_as_user "$user" "$uid" lock isLocked 2>&1 || true)
       case $answer in
       true)
         printf 'yes'
@@ -113,6 +116,13 @@ emw_locked() {
       esac
       ((attempt + 1 < tries)) && sleep 0.25
     done
+
+    # Report once, on the initial multi-attempt probe only. The grace loop calls
+    # this every 2s with tries=1 and would otherwise bury the incident in
+    # identical lines - the same journal flooding setpriv was adopted to stop.
+    if ((tries > 1)) && [[ -n ${answer:-} ]]; then
+      printf 'emw: lock probe did not answer: %s\n' "${answer//$'\n'/ }" >&2
+    fi
   fi
 
   # We get here only when the IPC never answered.
@@ -137,16 +147,52 @@ emw_locked() {
   esac
 }
 
+# emw_omarchy_path <user> <uid>
+# omarchy-shell exits immediately with "OMARCHY_PATH is not set", and a root
+# system service inherits none of the session environment that normally sets it
+# (uwsm exports it into the systemd *user* manager, not the system one). With
+# the variable missing every lock probe failed, and because the caller sent
+# stderr to /dev/null the only symptom was "locked at trigger: unknown" on
+# every incident - a field that then could not be trusted in an investigation.
+#
+# Read the value out of the running shell's own environment rather than
+# hardcoding a prefix: a packaged Omarchy lives in /usr/share/omarchy, an
+# `omarchy dev link` checkout in ~/.local/share/omarchy.
+emw_omarchy_path() {
+  local user=$1 uid=$2 pid val home
+  while read -r pid; do
+    [[ -n $pid ]] || continue
+    val=$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null |
+      sed -n 's/^OMARCHY_PATH=//p' | head -1)
+    [[ -n $val && -d $val ]] && {
+      printf '%s' "$val"
+      return 0
+    }
+  done < <(pgrep -u "$uid" -x quickshell 2>/dev/null || true)
+
+  home=$(getent passwd "$user" 2>/dev/null | cut -d: -f6)
+  for val in /usr/share/omarchy "${home:-/home/$user}/.local/share/omarchy"; do
+    [[ -d $val ]] && {
+      printf '%s' "$val"
+      return 0
+    }
+  done
+  return 1
+}
+
 # emw_shell_as_user <user> <uid> <target> <method> [args...]
 # Calls the Omarchy Quickshell IPC as the desktop user. omarchy-shell locates
 # the shell through the Wayland socket in XDG_RUNTIME_DIR, so that variable has
-# to be set even when we are already the right user.
+# to be set even when we are already the right user, and refuses to run at all
+# without OMARCHY_PATH.
 emw_shell_as_user() {
-  local user=$1 uid=$2 gid
+  local user=$1 uid=$2 gid omarchy_path
   shift 2
 
+  omarchy_path=${OMARCHY_PATH:-$(emw_omarchy_path "$user" "$uid" || true)}
+
   if ((EUID != 0)); then
-    XDG_RUNTIME_DIR="/run/user/$uid" omarchy-shell "$@"
+    XDG_RUNTIME_DIR="/run/user/$uid" OMARCHY_PATH="$omarchy_path" omarchy-shell "$@"
     return
   fi
 
@@ -163,9 +209,10 @@ emw_shell_as_user() {
   gid=$(id -g "$user" 2>/dev/null || echo "$uid")
   if command -v setpriv >/dev/null 2>&1; then
     setpriv --reuid="$uid" --regid="$gid" --init-groups -- \
-      env XDG_RUNTIME_DIR="/run/user/$uid" omarchy-shell "$@"
+      env XDG_RUNTIME_DIR="/run/user/$uid" OMARCHY_PATH="$omarchy_path" omarchy-shell "$@"
     return
   fi
 
-  runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" omarchy-shell "$@"
+  runuser -u "$user" -- \
+    env XDG_RUNTIME_DIR="/run/user/$uid" OMARCHY_PATH="$omarchy_path" omarchy-shell "$@"
 }
