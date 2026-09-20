@@ -97,7 +97,8 @@ fi
 # Keeping the DEFAULT app name (omarchy-action) is deliberate: per
 # docs/notifications.md only two senders punch through the user's own
 # do-not-disturb, and omarchy-action is one of them. A tamper alert that the
-# user's DND swallows is worse than no alert, because they would trust it.
+# user's do-not-disturb swallows is worse than no alert, because they would
+# trust it.
 # omarchy-crash-watch relies on exactly this for the same reason.
 notify_args=(--urgency "$urgency" --glyph "$EMW_GLYPH")
 

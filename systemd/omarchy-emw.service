@@ -1,6 +1,5 @@
 [Unit]
 Description=Omarchy EvilMaid Watch - physical-access (evil-maid) detection
-Documentation=https://github.com/objective-see/DoNotDisturb
 # No ordering against udev is needed: the watcher discovers the lid device by
 # capability and rescans with backoff if it is not there yet, so starting early
 # costs at most one rescan rather than losing the device entirely.

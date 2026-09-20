@@ -128,7 +128,7 @@ Lock the screen, then close and reopen the lid to produce an incident.
 Unlock within the grace window and it stays silent; walk away and it escalates.
 
 NOTE: capturing lights the camera LED. That is hardware-wired on this machine
-and is intended - the same deterrent behaviour as macOS DoNotDisturb.
+and is intended - the same visible deterrent macOS gives you.
 EOF
 
 # Report the alerting state rather than asserting one. This line used to say

@@ -103,7 +103,7 @@ api_failed() {
   409)
     echo "Telegram returned 409 Conflict." >&2
     echo "Another client is already consuming this bot's updates - likely the" >&2
-    echo "other DoNotDisturb host using the same bot, via polling or a webhook." >&2
+    echo "other host using the same bot, via polling or a webhook." >&2
     echo "Give this machine its own bot, or enter the chat id manually below." >&2
     ;;
   *)
@@ -193,7 +193,7 @@ No chat found automatically. That is expected if this bot is already used by
 another host: Telegram hands each update to one consumer, and a bot with a
 webhook cannot be polled at all.
 
-You can enter the chat id by hand. On your other DoNotDisturb host it is the
+You can enter the chat id by hand. On your other host it is the
 telegramChatID setting; it looks like 123456789 (or -100... for a group).
 
 EOF

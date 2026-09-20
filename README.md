@@ -5,8 +5,6 @@ lid, wakes the machine, plugs in a USB device, or fails at your lock screen,
 EMW photographs whoever is in front of the camera, records an incident, and
 tells you about it — on the machine and on your phone.
 
-It is a Linux port of the idea behind Objective-See's
-[DoNotDisturb](https://github.com/objective-see/DoNotDisturb) for macOS.
 Physical access — the "evil maid" attack — is one of the hardest threats to
 defend against, and the realistic goal is not prevention but **detection with
 evidence**: knowing it happened, when, and having a photo.
@@ -29,8 +27,8 @@ attaching a USB device.
 - It is not anti-theft or device tracking.
 
 The camera LED lights during capture. That is hardware-wired on Apple silicon
-and cannot be suppressed — and it is wanted: the same visible deterrent macOS
-DoNotDisturb relies on.
+and cannot be suppressed — and it is wanted: a visible deterrent, and a sign to
+you that the shutter fired.
 
 ## How an incident works
 
@@ -51,9 +49,9 @@ trigger ──► debounce ──► capture ──► lock state ──► grac
    exists even if the machine is shut or carried off seconds later.
 4. **Lock state and grace.** If the session was locked, EMW waits
    `GRACE_SECONDS` for a *trusted unlock*. You unlocking in time means the
-   incident was you. This stands in for DoNotDisturb's Touch ID mode, which
-   Asahi has no fingerprint reader for; if one ever works, it slots in here as
-   an additional trusted-unlock signal rather than replacing this one. The
+   incident was you. This stands in for a biometric unlock, which Asahi has no
+   working fingerprint reader for; if one ever lands, it slots in here as an
+   additional trusted-unlock signal rather than replacing this one. The
    grace window is measured from the **trigger**, not from when the lid was
    closed — time spent away with the lid shut does not count.
 5. **Verdict.** One of:

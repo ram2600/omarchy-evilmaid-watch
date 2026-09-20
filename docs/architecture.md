@@ -59,8 +59,8 @@ session — not merely the first row from `loginctl` — and re-enters it as tha
 user with the right bus address.
 
 **Toasts keep the default app name on purpose.** Only two senders punch through
-the user's do-not-disturb, and `omarchy-action` is one of them. A tamper alert
-that DND swallows is worse than none, because it is trusted.
+the user's do-not-disturb mode, and `omarchy-action` is one of them. A tamper
+alert that do-not-disturb swallows is worse than none, because it is trusted.
 
 **Failed-unlock matching must be scoped to the lock screen's PAM service.**
 Without the `omarchy-lock-password` filter, every mistyped `sudo` password
@@ -120,8 +120,8 @@ file or a mangled `EVIDENCE_DIR` cannot widen what it deletes.
 
 ## Trusted unlock and Touch ID
 
-`TRUSTED_UNLOCK` + `GRACE_SECONDS` stand in for DoNotDisturb's `touchIDMode`,
-which Asahi cannot offer because there is no working fingerprint reader. The
+`TRUSTED_UNLOCK` + `GRACE_SECONDS` stand in for a biometric unlock, which
+Asahi cannot offer because there is no working fingerprint reader. The
 grace loop asks one question — "did the session become unlocked in time?" — so
 a future biometric would enter as an additional signal answering the same
 question, not as a replacement for it. The verdict logic would not change.

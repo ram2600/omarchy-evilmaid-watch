@@ -8,7 +8,7 @@
 
 # NOTE: the camera LED on Apple hardware is wired to camera power. This WILL
 # light it. That is intended - it is the same deterrent behaviour as macOS
-# DoNotDisturb, and there is no software path that captures without it.
+# macOS, and there is no software path that captures without it.
 
 set -euo pipefail
 

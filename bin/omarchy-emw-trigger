@@ -148,8 +148,8 @@ if conf_bool CAPTURE_PHOTO true; then
 fi
 
 # --- Grace period ----------------------------------------------------------
-# This is the trusted-unlock mechanism, standing in for DoNotDisturb's Touch ID
-# mode (Asahi has no fingerprint reader). The rule: if whoever opened the lid
+# This is the trusted-unlock mechanism, standing in for a biometric unlock -
+# Asahi has no working fingerprint reader. The rule: if whoever opened the lid
 # can unlock the session within the grace window, they are you.
 grace=$(conf_get GRACE_SECONDS 60)
 [[ $grace =~ ^[0-9]+$ ]] || grace=60
@@ -228,7 +228,7 @@ attended | benign) conf_bool NOTIFY_ON_BENIGN false && notify=true ;;
 esac
 
 # Passive mode records the incident and says nothing at all - no toast, no
-# remote alert, no hooks. Upstream DoNotDisturb calls this passiveMode.
+# remote alert, no hooks.
 if conf_bool PASSIVE_MODE false; then
   log_journal "passive mode: incident logged, no alerting"
   notify=false

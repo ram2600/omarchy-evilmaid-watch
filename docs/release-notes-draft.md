@@ -6,8 +6,7 @@ that would be pasted into the release.
 
 ## Before publishing
 
-- [ ] Add a `LICENSE` (the repo has none; upstream DoNotDisturb is GPLv3, but
-      this is an independent implementation, so the choice is open)
+- [ ] Add a `LICENSE` (the repo has none)
 - [ ] Decide the tag: `v0.1.0` assumed below
 - [ ] Replace `<you>` in the README clone URL
 - [ ] Confirm behaviour on a non-Asahi laptop, or scope the claims to Asahi
@@ -24,11 +23,9 @@ the machine, plugs in a USB device, or guesses at your lock screen while you are
 away, EvilMaid Watch photographs them, records the incident, and tells you —
 locally and on your phone.
 
-It is a Linux take on the idea behind Objective-See's
-[DoNotDisturb](https://github.com/objective-see/DoNotDisturb) for macOS. The
-"evil maid" attack — someone with brief physical access to your machine — is
-one of the threats you cannot really prevent. What you can do is make sure it
-never happens *quietly*.
+The "evil maid" attack — someone with brief physical access to your machine —
+is one of the threats you cannot really prevent. What you can do is make sure
+it never happens *quietly*.
 
 ## What it does
 
@@ -37,8 +34,7 @@ never happens *quietly*.
 - **Photo first, questions later.** The camera fires within ~3 seconds of the
   trigger, before any waiting, so evidence exists even if the machine is shut
   or carried off immediately. The camera LED lights while it does — that is
-  hardware-wired on Apple silicon, and it is the point: the same visible
-  deterrent macOS DoNotDisturb relies on.
+  hardware-wired on Apple silicon, and it is the point: a visible deterrent.
 - **It knows the difference between you and an intruder.** If the session was
   locked and someone unlocks it within the grace window, the incident is
   recorded as benign and no alert is sent. Walk away and it escalates.
@@ -89,8 +85,3 @@ testing this the obvious way can lock you out of your own machine. See
 - USB triggering fires on any device add, including your own peripherals.
 - Photos are stored unencrypted, readable by root, on the machine an attacker
   is holding. Configure a remote alert if that matters to you.
-
-## Credit
-
-The design owes its shape to Objective-See's DoNotDisturb, including the
-distinction between an attended and an unattended lid open, and passive mode.

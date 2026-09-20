@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# omarchy:summary=Watch the laptop lid switch and fire DoNotDisturb incidents
+# omarchy:summary=Watch the laptop lid switch and fire EvilMaid Watch incidents
 # omarchy:hidden=true
 
 # Thin wrapper so the daemon carries Omarchy command metadata while the event

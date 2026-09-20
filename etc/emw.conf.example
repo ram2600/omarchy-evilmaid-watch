@@ -1,4 +1,4 @@
-# Omarchy DoNotDisturb configuration.
+# Omarchy EvilMaid Watch (EMW) configuration.
 #
 # Installed to /etc/omarchy/emw.conf as 0600 root:root - it holds API tokens.
 # This file is sourced by bash, so values are shell syntax: quote anything
@@ -15,14 +15,13 @@ EMW_USER=
 TRIGGERS=lid,resume,faillock,usb
 
 # Log the incident locally but send nothing and run no hooks.
-# Upstream DoNotDisturb calls this passiveMode.
 PASSIVE_MODE=false
 
 # --- Trusted unlock -------------------------------------------------------
 # Evidence is always captured immediately. Then we wait this long for someone
 # to unlock the session. An unlock in time means it was you: the incident is
-# logged as benign and no remote alert goes out. This replaces upstream's
-# touchIDMode, since Touch ID is not available under Asahi.
+# logged as benign and no remote alert goes out. It stands in for a biometric
+# unlock, since Asahi has no working fingerprint reader.
 TRUSTED_UNLOCK=true
 GRACE_SECONDS=20
 
