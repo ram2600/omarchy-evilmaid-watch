@@ -100,7 +100,7 @@ changed default in the template will not reach a config you already have.
 | `sudo omarchy-emw-setup set KEY VALUE` | Change one tunable without editing the file |
 | `sudo omarchy-emw-show` | Show the latest incident and open its photo |
 | `sudo omarchy-emw-trigger manual` | Raise a real incident on demand |
-| `sudo omarchy-emw-faillock --simulate` | Test the failed-unlock path without wrong passwords |
+| `sudo omarchy-emw-faillock --simulate --live --delay 15` | Test the failed-unlock path without wrong passwords (lock the screen during the delay) |
 | `sudo omarchy-emw-faillock --probe 120` | Print what the watcher would match, firing nothing |
 | `sudo omarchy-emw-spool` | Retry queued alerts now |
 | `sudo omarchy-emw-prune --dry-run` | Show which evidence has expired, deleting nothing |

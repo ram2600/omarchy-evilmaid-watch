@@ -32,6 +32,7 @@ probe=false
 probe_seconds=120
 simulate=false
 sim_mode=trigger # trigger | dry | live
+sim_delay=0
 
 while (($# > 0)); do
   case $1 in
@@ -51,6 +52,14 @@ while (($# > 0)); do
   --live)
     sim_mode=live
     shift
+    ;;
+  --delay)
+    sim_delay=${2:-0}
+    [[ $sim_delay =~ ^[0-9]+$ ]] || {
+      echo "--delay takes seconds" >&2
+      exit 64
+    }
+    shift 2
     ;;
   *)
     echo "usage: omarchy-emw-faillock [--probe [seconds]] [--simulate [--dry|--live]]" >&2
@@ -168,7 +177,29 @@ run_simulation() {
       echo "faillock simulation: --live needs omarchy-emw-faillock.service running" >&2
       return 1
     }
-    local since grace deadline
+    local since grace deadline sid locked
+
+    # This trigger means "someone failed at the lock screen", so simulating it
+    # against an unlocked session is a contradiction: the verdict is attended,
+    # and neither the toast nor the remote alert is exercised. Say so rather
+    # than let a silent, correct run look like a broken one.
+    sid=$(emw_session_id || true)
+    locked=unknown
+    [[ -n $sid ]] && locked=$(emw_locked "$sid" 1)
+    if [[ $locked != "yes" ]]; then
+      echo "faillock simulation: session is not locked (lock state: $locked)."
+      if ((sim_delay == 0)); then
+        echo "  The verdict will be 'attended' and no toast or remote alert will be sent."
+        echo "  To exercise the full intruder path, lock the screen during the delay:"
+        echo "    sudo omarchy-emw-faillock --simulate --live --delay 15"
+      fi
+    fi
+
+    if ((sim_delay > 0)); then
+      echo "faillock simulation: lock your screen now - injecting in ${sim_delay}s"
+      sleep "$sim_delay"
+    fi
+
     # Anchor the report to this run. Reading a relative window instead would
     # fold in whatever the daemon logged for an earlier incident.
     since=$(date '+%Y-%m-%d %H:%M:%S')
@@ -194,7 +225,7 @@ run_simulation() {
 
     echo "faillock simulation: what the daemon did:"
     journalctl -u omarchy-emw-faillock.service --since "$since" --no-pager 2>/dev/null |
-      grep -E 'failed unlock|threshold reached|new incident|photo|verdict|toast|alert|incident recorded' |
+      grep -E 'failed unlock|threshold reached|new incident|locked at trigger|photo|verdict|toast|alert|incident recorded' |
       sed 's/^[A-Z][a-z][a-z] [0-9 ][0-9] //; s/^/  /' || true
     return 0
   fi

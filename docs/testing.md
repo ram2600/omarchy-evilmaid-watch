@@ -23,10 +23,20 @@ off the keyboard.
 ## `--simulate`
 
 ```bash
-sudo omarchy-emw-faillock --simulate --dry    # matcher + tally only, no incident
-sudo omarchy-emw-faillock --simulate          # + escalation through the real trigger
-sudo omarchy-emw-faillock --simulate --live   # + journald and the deployed daemon
+sudo omarchy-emw-faillock --simulate --dry              # matcher + tally only, no incident
+sudo omarchy-emw-faillock --simulate                    # + escalation through the real trigger
+sudo omarchy-emw-faillock --simulate --live             # + journald and the deployed daemon
+sudo omarchy-emw-faillock --simulate --live --delay 15  # + lock the screen first
 ```
+
+**Lock the screen, or the alert path is not tested.** This trigger means
+"someone failed at the lock screen", so running it against an unlocked session
+is a contradiction: the verdict is `attended`, and with the default
+`ALERT_WHEN_UNLOCKED=false` there is no toast and no remote alert. That is
+correct behaviour and looks exactly like a broken run. `--delay <seconds>`
+gives you time to lock the screen before the failures are injected; the
+simulation also prints the current lock state up front so a silent run is never
+a mystery.
 
 All three start with a matcher self-test over synthetic lines copied from real
 journal output, including the cases that must **not** fire:
