@@ -80,7 +80,20 @@ NOTIFY_ON_BENIGN=false
 
 # --- Storage --------------------------------------------------------------
 EVIDENCE_DIR=/var/lib/omarchy-emw
-RETAIN_DAYS=30
+
+# How long evidence is kept, on two clocks. The photo is taken before the grace
+# period can tell you from an intruder, so a benign incident still holds a
+# picture of you - and keeping those as long as real evidence is a privacy cost
+# with no forensic return.
+#
+# Note the one case this trades away: if someone knew or coerced your password
+# and unlocked inside the grace window, the verdict is benign and that photo
+# expires on the short clock.
+#
+# Either set to 0 to keep that class forever. events.log keeps the record of
+# every incident permanently either way; only the photo and metadata expire.
+RETAIN_DAYS=7
+BENIGN_RETAIN_DAYS=2
 
 # Collapse triggers that arrive within this window into one incident. Opening
 # the lid after a suspend fires both the lid watcher and the resume unit, so

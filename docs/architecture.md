@@ -104,6 +104,28 @@ The bot token is read from the config **at send time** and never written to the
 spool file, so the queue never becomes a second place a credential lives.
 `flock` around the drain keeps the timer and a manual run from double-sending.
 
+## Retention
+
+`omarchy-emw-prune` runs from the spool timer and expires evidence on two
+clocks: `BENIGN_RETAIN_DAYS` for `benign`/`attended`, `RETAIN_DAYS` for
+everything else including undecided incidents. The split exists because
+capture is unconditional and happens before the verdict, so routine use of your
+own laptop accumulates photographs of you at ~105 KB each.
+
+It rides the existing timer rather than firing at the end of an incident:
+retention has to be time-based, or the last benign photo would sit there
+indefinitely once incidents stopped arriving. The loop refuses any directory
+whose name is not `YYYYMMDDTHHMMSSZ-<pid>` before calling `rm -rf`, so a stray
+file or a mangled `EVIDENCE_DIR` cannot widen what it deletes.
+
+## Trusted unlock and Touch ID
+
+`TRUSTED_UNLOCK` + `GRACE_SECONDS` stand in for DoNotDisturb's `touchIDMode`,
+which Asahi cannot offer because there is no working fingerprint reader. The
+grace loop asks one question — "did the session become unlocked in time?" — so
+a future biometric would enter as an additional signal answering the same
+question, not as a replacement for it. The verdict logic would not change.
+
 ## A companion shell plugin
 
 A bar indicator — armed/disarmed, last incident, click to open it — is the one

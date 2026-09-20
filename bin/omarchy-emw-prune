@@ -1,0 +1,87 @@
+#!/bin/bash
+
+# omarchy:summary=Expire old EvilMaid Watch evidence, by verdict
+# omarchy:args=[--dry-run]
+# omarchy:hidden=true
+# omarchy:requires-sudo=true
+
+# Evidence is photographs of whoever opened the laptop - which, the
+# overwhelming majority of the time, is you. Capture happens before the grace
+# period can tell you from an intruder, so a benign incident still ends up
+# holding a picture of you. Keeping those for as long as real evidence is a
+# privacy cost with no forensic return, so the two are expired on different
+# clocks:
+#
+#   RETAIN_DAYS         intruder/unattended, and anything undecided
+#   BENIGN_RETAIN_DAYS  benign/attended - it was you
+#
+# Either set to 0 keeps that class forever.
+#
+# Only the evidence directory is removed. events.log is append-only and keeps
+# the record of every incident permanently, so pruning costs the photo and the
+# metadata, never the fact that something happened.
+
+set -euo pipefail
+
+readonly LIB_DIR=${OMARCHY_EMW_LIB:-/usr/local/lib/omarchy-emw}
+# shellcheck source=../lib/emw-common.sh
+source "$LIB_DIR/emw-common.sh"
+
+dry_run=false
+[[ ${1:-} == "--dry-run" ]] && dry_run=true
+
+evidence_dir=$(conf_get EVIDENCE_DIR /var/lib/omarchy-emw)
+incidents_dir="$evidence_dir/incidents"
+[[ -d $incidents_dir ]] || exit 0
+
+retain_days=$(conf_get RETAIN_DAYS 7)
+benign_days=$(conf_get BENIGN_RETAIN_DAYS 2)
+[[ $retain_days =~ ^[0-9]+$ ]] || retain_days=7
+[[ $benign_days =~ ^[0-9]+$ ]] || benign_days=2
+
+now=$(date +%s)
+removed=0
+freed=0
+
+for dir in "$incidents_dir"/*/; do
+  [[ -d $dir ]] || continue
+  dir=${dir%/}
+  name=$(basename "$dir")
+
+  # This loop ends in rm -rf on a computed path. Refuse anything that is not
+  # an incident directory by name, so a stray file or a mangled config can
+  # never widen what this deletes.
+  [[ $name =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]+$ ]] || continue
+
+  verdict=""
+  if [[ -r $dir/verdict.json ]]; then
+    verdict=$(jq -r '.verdict // ""' "$dir/verdict.json" 2>/dev/null || true)
+  fi
+
+  # An incident with no verdict is either still running or was cut short. Both
+  # get the long clock: deleting evidence because the machine lost power
+  # mid-incident is exactly the wrong bias.
+  case $verdict in
+  benign | attended) days=$benign_days ;;
+  *) days=$retain_days ;;
+  esac
+  ((days > 0)) || continue
+
+  mtime=$(stat -c %Y "$dir" 2>/dev/null || echo "$now")
+  age_days=$(((now - mtime) / 86400))
+  ((age_days > days)) || continue
+
+  size=$(du -sk "$dir" 2>/dev/null | cut -f1 || echo 0)
+  if $dry_run; then
+    echo "would remove $name (${verdict:-undecided}, ${age_days}d old, ${size}K)"
+  else
+    rm -rf -- "$dir"
+    removed=$((removed + 1))
+    freed=$((freed + size))
+  fi
+done
+
+# Quiet unless something happened: this runs from the spool timer every 120s,
+# and a heartbeat line would bury the incidents the log exists to show.
+((removed > 0)) && echo "emw-prune: removed $removed incident(s), freed ${freed}K" >&2
+exit 0

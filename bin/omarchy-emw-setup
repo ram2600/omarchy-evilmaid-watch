@@ -348,8 +348,9 @@ send_test() {
 set_value() {
   local key=${1:-} value=${2:-}
   case $key in
-  GRACE_SECONDS | DEBOUNCE_SECONDS | RETAIN_DAYS | SPOOL_MAX_AGE_HOURS | \
-    PHOTO_WARMUP_FRAMES | AUTH_FAILURE_THRESHOLD | AUTH_FAILURE_WINDOW)
+  GRACE_SECONDS | DEBOUNCE_SECONDS | RETAIN_DAYS | BENIGN_RETAIN_DAYS | \
+    SPOOL_MAX_AGE_HOURS | PHOTO_WARMUP_FRAMES | AUTH_FAILURE_THRESHOLD | \
+    AUTH_FAILURE_WINDOW)
     [[ $value =~ ^[0-9]+$ ]] || {
       echo "$key must be a whole number" >&2
       exit 64

@@ -1,11 +1,15 @@
 [Unit]
-Description=Retry queued Omarchy EvilMaid Watch alerts
+Description=Retry queued Omarchy EvilMaid Watch alerts and expire old evidence
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/omarchy-emw-spool
+# Retention rides on this timer rather than its own: pruning has to happen on a
+# clock, not only when a new incident arrives, or the last benign photo of you
+# would sit there until something else happened.
+ExecStart=/usr/local/bin/omarchy-emw-prune
 # Delivery is best effort; a still-offline machine must not leave the unit in a
 # failed state that masks a later real failure.
 SuccessExitStatus=0 75

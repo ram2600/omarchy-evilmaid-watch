@@ -51,7 +51,11 @@ trigger ──► debounce ──► capture ──► lock state ──► grac
    exists even if the machine is shut or carried off seconds later.
 4. **Lock state and grace.** If the session was locked, EMW waits
    `GRACE_SECONDS` for a *trusted unlock*. You unlocking in time means the
-   incident was you.
+   incident was you. This stands in for DoNotDisturb's Touch ID mode, which
+   Asahi has no fingerprint reader for; if one ever works, it slots in here as
+   an additional trusted-unlock signal rather than replacing this one. The
+   grace window is measured from the **trigger**, not from when the lid was
+   closed — time spent away with the lid shut does not count.
 5. **Verdict.** One of:
 
    | Verdict | Meaning |
@@ -101,6 +105,7 @@ changed default in the template will not reach a config you already have.
 | `sudo omarchy-emw-faillock --simulate` | Test the failed-unlock path without wrong passwords |
 | `sudo omarchy-emw-faillock --probe 120` | Print what the watcher would match, firing nothing |
 | `sudo omarchy-emw-spool` | Retry queued alerts now |
+| `sudo omarchy-emw-prune --dry-run` | Show which evidence has expired, deleting nothing |
 | `journalctl -u omarchy-emw -f` | Watch it live |
 
 ## Configuration
@@ -121,7 +126,8 @@ The settings most worth knowing:
 | `ALERT_CHANNEL` | `none` | `none`, `telegram`, `ntfy`, `both` |
 | `PASSIVE_MODE` | `false` | Log only: no alerts, no hooks |
 | `NOTIFY_ON_BENIGN` | `false` | Toast even when it turned out to be you |
-| `RETAIN_DAYS` | `30` | Incident retention |
+| `RETAIN_DAYS` | `7` | Evidence retention: intruder, unattended, undecided |
+| `BENIGN_RETAIN_DAYS` | `2` | Evidence retention once it turned out to be you |
 | `DEBOUNCE_SECONDS` | `20` | Coalesce window |
 
 `NOTIFY_ON_BENIGN` is off deliberately: a toast for every lid open you make
@@ -146,6 +152,24 @@ you swipe away out of habit.
 `events.log` is `chattr +a` where the filesystem supports it. That stops
 non-root tampering; it does **not** stop a root attacker, who can simply
 `chattr -a`.
+
+### Retention
+
+The photo is taken *before* the grace period can tell you from an intruder, so
+a `benign` incident still holds a picture of you. Those expire on a short clock
+(`BENIGN_RETAIN_DAYS`, default 2 days) while real evidence keeps the long one
+(`RETAIN_DAYS`, default 7). An incident with no verdict — still running, or cut
+short by a power loss — gets the long clock, because deleting evidence over a
+crash is the wrong bias. Either setting at `0` keeps that class forever.
+
+This trades away one case worth naming: if someone knew or coerced your
+password and unlocked inside the grace window, the verdict is `benign` and that
+photo expires early.
+
+Pruning runs from `omarchy-emw-spool.timer` — on a clock rather than only when
+a new incident arrives, so the last photo of you does not sit there until
+something else happens. Only the evidence directory is removed; `events.log`
+keeps the record of every incident permanently.
 
 ## Remote alerts
 
