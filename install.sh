@@ -142,7 +142,11 @@ install -m 0644 "$REPO_DIR/systemd/omarchy-emw-faillock.service" "$UNIT_DIR/"
 install -m 0644 "$REPO_DIR/systemd/99-omarchy-emw-usb.rules" /etc/udev/rules.d/
 install -d -m 0700 -o root -g root "$STATE_DIR/spool"
 systemctl daemon-reload
-systemctl enable --now omarchy-emw-spool.timer
+systemctl enable omarchy-emw-spool.timer
+# restart, not `enable --now`: --now leaves an already-running timer alone, so
+# a changed timer definition would not take effect until reboot. Same trap as
+# the watcher below.
+systemctl restart omarchy-emw-spool.timer
 systemctl enable omarchy-emw-resume.service
 systemctl enable omarchy-emw-faillock.service
 systemctl restart omarchy-emw-faillock.service

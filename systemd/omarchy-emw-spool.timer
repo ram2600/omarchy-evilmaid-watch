@@ -2,13 +2,22 @@
 Description=Periodically retry queued Omarchy EvilMaid Watch alerts
 
 [Timer]
-# Soon after boot: a machine opened while powered off, then booted, should
-# alert as soon as it has a network.
-OnBootSec=90
+# OnActiveSec, not OnBootSec: relative to this TIMER being activated, which
+# covers both boot and a mid-session install. OnUnitActiveSec only chains off
+# the last activation of the service, so with a boot-relative first trigger
+# alone, a timer started long after boot - by install.sh, right after
+# uninstall.sh stopped the previous instance - has nothing to chain from and
+# sits "active (elapsed), Trigger: n/a" forever. Retry and pruning then never
+# run again, silently, until the next reboot.
+#
+# The first trigger still matters on its own: a machine opened while powered
+# off, then booted, should alert as soon as it has a network.
+OnActiveSec=90
 OnUnitActiveSec=120
 AccuracySec=15
-# Catch up after a suspend rather than waiting out a full interval.
-Persistent=true
+# No Persistent=: it applies only to OnCalendar= timers and is ignored for
+# monotonic ones, so it read as a guarantee this timer never had. Monotonic
+# timers that came due while suspended fire on resume regardless.
 
 [Install]
 WantedBy=timers.target
