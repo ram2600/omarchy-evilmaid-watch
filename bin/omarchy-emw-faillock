@@ -177,7 +177,7 @@ run_simulation() {
       echo "faillock simulation: --live needs omarchy-emw-faillock.service running" >&2
       return 1
     }
-    local since grace deadline sid locked
+    local since deadline sid locked grace
 
     # This trigger means "someone failed at the lock screen", so simulating it
     # against an unlocked session is a contradiction: the verdict is attended,
@@ -195,8 +195,20 @@ run_simulation() {
       fi
     fi
 
+    # Read the grace window before the delay, not after: once the screen is
+    # locked this message is the last thing the tester can read, and the one
+    # number they need is how long to stay locked.
+    grace=$(conf_get GRACE_SECONDS 60)
+    [[ $grace =~ ^[0-9]+$ ]] || grace=60
+
     if ((sim_delay > 0)); then
+      local stay_until
+      stay_until=$(date -d "+$((sim_delay + grace + 5)) seconds" '+%H:%M:%S' 2>/dev/null || echo "")
       echo "faillock simulation: lock your screen now - injecting in ${sim_delay}s"
+      echo "  Then STAY LOCKED until about ${stay_until:-"$((sim_delay + grace + 5))s from now"}."
+      echo "  Unlocking inside the ${grace}s grace window is the trusted unlock this tool"
+      echo "  is built around: the verdict becomes 'benign' and nothing is sent. That is"
+      echo "  correct behaviour, and it is indistinguishable from a broken run."
       sleep "$sim_delay"
     fi
 
@@ -213,8 +225,6 @@ run_simulation() {
     # The incident is not decided until the grace window expires, so a fixed
     # short wait reports `new incident` and stops - hiding the verdict, the
     # toast and the alert, which are the parts worth confirming.
-    grace=$(conf_get GRACE_SECONDS 60)
-    [[ $grace =~ ^[0-9]+$ ]] || grace=60
     echo "faillock simulation: injected; waiting up to $((grace + 20))s for the verdict"
     deadline=$(($(date +%s) + grace + 20))
     while (($(date +%s) < deadline)); do
