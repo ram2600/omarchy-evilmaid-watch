@@ -56,6 +56,24 @@ install -m 0644 "$REPO_DIR"/lib/*.sh "$LIB_DIR/"
 install -d -m 0755 "$CONF_DIR"
 if [[ -f $CONF_FILE ]]; then
   echo "  keeping existing $CONF_FILE"
+  # The config is never overwritten - it holds API tokens. That means a key
+  # added by a later version stays absent from an existing install, silently
+  # running on the code's built-in default with nothing in the file to show
+  # for it. Report those rather than let them hide.
+  missing=()
+  while IFS= read -r key; do
+    grep -qE "^[[:space:]]*$key[[:space:]]*=" "$CONF_FILE" || missing+=("$key")
+  done < <(sed -n 's/^\([A-Z_][A-Z0-9_]*\)=.*/\1/p' "$REPO_DIR/etc/emw.conf.example" | sort -u)
+
+  if ((${#missing[@]} > 0)); then
+    echo "  settings in this version that your config does not mention:"
+    for key in "${missing[@]}"; do
+      default=$(sed -n "s/^$key=\(.*\)/\1/p" "$REPO_DIR/etc/emw.conf.example" | head -1)
+      echo "    $key (default: ${default:-unset})"
+    done
+    echo "  they are running on those defaults; set one with:"
+    echo "    sudo omarchy-emw-setup set <KEY> <VALUE>"
+  fi
 else
   install -m 0600 -o root -g root "$REPO_DIR/etc/emw.conf.example" "$CONF_FILE"
   # Bake in the resolved user so the daemon never has to guess.
