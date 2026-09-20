@@ -236,13 +236,13 @@ emw_config_version_gate() {
 
   live_version=$(sed -n 's/^[[:space:]]*CONFIG_VERSION=\([0-9]*\).*/\1/p' "$live" 2>/dev/null | head -1)
 
-  # Predates versioning. Not an error: every key such a config lacks is
-  # reported separately and runs on a stated default, so the machine is armed
-  # as documented.
+  # A config written before versioning existed IS version 1 - that is the shape
+  # it has. Treating it as "whatever this release expects" would let a legacy
+  # config sail through the first breaking change, which is the one thing this
+  # gate exists to stop. So it is pinned to 1 and compared like any other.
   if [[ -z $live_version ]]; then
-    echo "  note: $live predates CONFIG_VERSION (treating as version $template_version)"
-    echo "        for a config written by this version: sudo ./uninstall.sh --purge-config"
-    return 0
+    live_version=1
+    echo "  note: $live predates CONFIG_VERSION; treating it as version 1"
   fi
 
   [[ $live_version == "$template_version" ]] && return 0

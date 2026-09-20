@@ -83,7 +83,10 @@ if [[ -f $CONF_FILE ]]; then
   missing=()
   while IFS= read -r key; do
     grep -qE "^[[:space:]]*$key[[:space:]]*=" "$CONF_FILE" || missing+=("$key")
-  done < <(sed -n 's/^\([A-Z_][A-Z0-9_]*\)=.*/\1/p' "$REPO_DIR/etc/emw.conf.example" | sort -u)
+    # CONFIG_VERSION is the file's shape, not a setting: the gate above owns
+    # it, and `setup set` deliberately refuses it.
+  done < <(sed -n 's/^\([A-Z_][A-Z0-9_]*\)=.*/\1/p' "$REPO_DIR/etc/emw.conf.example" |
+    grep -v '^CONFIG_VERSION$' | sort -u)
 
   if ((${#missing[@]} > 0)); then
     echo "  settings in this version that your config does not mention:"
