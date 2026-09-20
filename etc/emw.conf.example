@@ -1,8 +1,18 @@
 # Omarchy EvilMaid Watch (EMW) configuration.
 #
 # Installed to /etc/omarchy/emw.conf as 0600 root:root - it holds API tokens.
+#
+# CONFIG_VERSION is the shape of this file, not the version of the software.
+# It is bumped only when a change cannot be expressed by adding a key with a
+# safe default - a renamed setting, a changed meaning, a removed feature.
+# install.sh refuses to run against a config from a different version rather
+# than migrating it: a security tool quietly inheriting settings across a
+# breaking change is how a machine ends up armed differently than its owner
+# believes. The supported path is uninstall.sh --purge-config, then install.
+CONFIG_VERSION=1
 # This file is sourced by bash, so values are shell syntax: quote anything
 # with spaces, and do not add trailing comments on a value line.
+
 
 # Master switch. Set false to stop reacting to triggers entirely.
 ENABLED=true

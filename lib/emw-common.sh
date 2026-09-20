@@ -216,3 +216,57 @@ emw_shell_as_user() {
   runuser -u "$user" -- \
     env XDG_RUNTIME_DIR="/run/user/$uid" OMARCHY_PATH="$omarchy_path" omarchy-shell "$@"
 }
+
+# emw_config_version_gate <template-file> <live-file> <force:true|false>
+# Prints guidance and returns:
+#   0  versions agree, or the live config predates versioning, or forced
+#   1  mismatch - the caller must not proceed
+#
+# This project does not migrate configs forward. A breaking change means
+# reconfiguring, so that every value in the file was written by the version
+# running it rather than inherited from one where it meant something else. A
+# security tool quietly carrying settings across a breaking change is how a
+# machine ends up armed differently than its owner believes.
+emw_config_version_gate() {
+  local template=$1 live=$2 force=$3 template_version live_version
+
+  template_version=$(sed -n 's/^CONFIG_VERSION=\([0-9]*\).*/\1/p' "$template" 2>/dev/null | head -1)
+  [[ -n $template_version ]] || return 0
+  [[ -f $live ]] || return 0
+
+  live_version=$(sed -n 's/^[[:space:]]*CONFIG_VERSION=\([0-9]*\).*/\1/p' "$live" 2>/dev/null | head -1)
+
+  # Predates versioning. Not an error: every key such a config lacks is
+  # reported separately and runs on a stated default, so the machine is armed
+  # as documented.
+  if [[ -z $live_version ]]; then
+    echo "  note: $live predates CONFIG_VERSION (treating as version $template_version)"
+    echo "        for a config written by this version: sudo ./uninstall.sh --purge-config"
+    return 0
+  fi
+
+  [[ $live_version == "$template_version" ]] && return 0
+
+  if [[ $force == "true" ]]; then
+    echo "  WARNING: config is version $live_version, this release expects $template_version" >&2
+    echo "           proceeding because --force-keep-config was given" >&2
+    return 0
+  fi
+
+  cat >&2 <<GATE
+
+Refusing to install: config version mismatch.
+  $live is version $live_version
+  this release expects version $template_version
+
+Settings are not migrated across a version change. Reconfigure:
+
+  sudo cp $live $live.v$live_version.bak   # keep your tokens to hand
+  sudo ./uninstall.sh --purge-config
+  sudo ./install.sh
+  sudo omarchy-emw-setup
+
+To override anyway: sudo ./install.sh --force-keep-config
+GATE
+  return 1
+}

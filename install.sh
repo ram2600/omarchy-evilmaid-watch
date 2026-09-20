@@ -10,6 +10,20 @@
 
 set -euo pipefail
 
+# Escape hatch for the config version gate below. Deliberately verbose: it is
+# for getting a machine working again in a hurry, not for routine upgrades.
+force_keep_config=false
+while (($# > 0)); do
+  case $1 in
+  --force-keep-config) force_keep_config=true ;;
+  *)
+    echo "usage: install.sh [--force-keep-config]" >&2
+    exit 64
+    ;;
+  esac
+  shift
+done
+
 readonly REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 readonly BIN_DIR=/usr/local/bin
 readonly LIB_DIR=/usr/local/lib/omarchy-emw
@@ -54,6 +68,12 @@ install -m 0644 "$REPO_DIR"/lib/*.sh "$LIB_DIR/"
 
 # --- Config ----------------------------------------------------------------
 install -d -m 0755 "$CONF_DIR"
+
+# --- Config version gate ---------------------------------------------------
+# shellcheck source=lib/emw-common.sh
+source "$REPO_DIR/lib/emw-common.sh"
+emw_config_version_gate "$REPO_DIR/etc/emw.conf.example" "$CONF_FILE" "$force_keep_config" || exit 78
+
 if [[ -f $CONF_FILE ]]; then
   echo "  keeping existing $CONF_FILE"
   # The config is never overwritten - it holds API tokens. That means a key

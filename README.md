@@ -109,7 +109,24 @@ changed default in the template will not reach a config you already have.
 ## Configuration
 
 `/etc/omarchy/emw.conf`, mode 0600 root:root because it holds API tokens.
-Sourced as bash: quote values with spaces, no trailing comments on a value line.
+Parsed, never sourced: a value like `x; rm -rf /` is just an odd string.
+Quote values with spaces, no trailing comments on a value line.
+
+**Settings are never migrated forward.** `install.sh` preserves an existing
+config — it holds your tokens — and reports any key this version knows that
+your config does not, along with the default it is running on. When a change
+cannot be expressed as a new key with a safe default, `CONFIG_VERSION` is
+bumped and the installer *refuses* rather than reinterpreting what you wrote:
+
+```bash
+sudo cp /etc/omarchy/emw.conf /etc/omarchy/emw.conf.bak
+sudo ./uninstall.sh --purge-config
+sudo ./install.sh && sudo omarchy-emw-setup
+```
+
+A security tool inheriting settings across a breaking change is how a machine
+ends up armed differently than its owner believes. `--force-keep-config`
+overrides the refusal when you need the machine working now.
 
 The settings most worth knowing:
 
@@ -184,6 +201,19 @@ verdict, with `EMW_INCIDENT_DIR`, `EMW_SOURCE` and `EMW_VERDICT` in the
 environment. Hooks must be root-owned and not group/world-writable or they are
 skipped — this directory runs code as root, so a user-writable hook would be a
 straight privilege escalation.
+
+## Uninstall
+
+```bash
+sudo ./uninstall.sh                    # stop and remove the software
+sudo ./uninstall.sh --purge-config     # also remove /etc/omarchy/emw.conf
+sudo ./uninstall.sh --purge-evidence   # also remove /var/lib/omarchy-emw
+sudo ./uninstall.sh --purge            # both
+```
+
+Config and evidence are kept unless asked for: removing the software should
+never be the thing that destroys the photographs it took. Units are stopped
+before they are disabled, so nothing keeps watching the lid until reboot.
 
 ## Testing
 
