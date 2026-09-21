@@ -1,0 +1,29 @@
+[Unit]
+Description=Omarchy EvilMaid Watch wake-from-idle watcher
+After=systemd-journald.service omarchy-emw.service
+Wants=systemd-journald.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/omarchy-emw-wakewatch
+Restart=always
+RestartSec=5
+
+# Same shape as the faillock watcher: follows the journal, shells out to the
+# trigger, needs the evidence store and a writable runtime dir for the staged
+# toast photo. /run/user/$uid is read-only in here - see omarchy-emw.service.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/omarchy-emw
+RuntimeDirectory=omarchy-emw
+RuntimeDirectoryMode=0711
+RuntimeDirectoryPreserve=yes
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+KillMode=control-group
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

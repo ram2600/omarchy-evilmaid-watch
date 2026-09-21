@@ -21,8 +21,18 @@ ENABLED=true
 # Set automatically by install.sh; change it if you install for someone else.
 EMW_USER=
 
-# Which triggers are live. Comma-separated subset of: lid,resume,faillock,usb
-TRIGGERS=lid,resume,faillock,usb
+# Which triggers are live. Comma-separated subset of:
+#   lid       the lid switch opening
+#   resume    waking from suspend or hibernate
+#   faillock  failed unlock attempts at the lock screen
+#   usb       a USB device being attached
+#   wake      the machine being woken after going idle
+#
+# `wake` exists because a laptop left open does not suspend on idle here: it
+# blanks and locks and stays awake, so nudging it produces no lid event and no
+# resume. Whether a wake matters is decided by the lock state like any other
+# trigger - waking your own unlocked machine is `attended` and silent.
+TRIGGERS=lid,resume,faillock,usb,wake
 
 # Log the incident locally but send nothing and run no hooks.
 PASSIVE_MODE=false

@@ -41,7 +41,7 @@ trigger ──► debounce ──► capture ──► lock state ──► grac
  manual
 ```
 
-1. **Trigger.** One of five sources fires (see below).
+1. **Trigger.** One of six sources fires (see below).
 2. **Debounce.** Triggers within `DEBOUNCE_SECONDS` coalesce into one incident.
    Opening the lid after a suspend genuinely fires both the lid watcher and the
    resume unit, so this is required, not an optimisation.
@@ -74,9 +74,19 @@ trigger ──► debounce ──► capture ──► lock state ──► grac
 | `resume` | oneshot unit ordered `After=suspend.target` and friends |
 | `faillock` | journal watcher matching failed unlocks at the lock screen |
 | `usb` | udev rule on `ACTION=="add", SUBSYSTEM=="usb"` |
+| `wake` | journal watcher for Omarchy's idle service spawning its wake process |
 | `manual` | `omarchy-emw-trigger manual`, for testing |
 
 Enable the subset you want with `TRIGGERS` in the config.
+
+`wake` covers a case the others miss: a laptop left **open and locked** never
+suspends on idle under Omarchy — it blanks and locks and stays awake — so
+someone nudging it produces no lid event, no resume, and no failed unlock
+unless they guess three times. Nothing fired at all, which is the quietest
+possible version of the event this tool exists to catch. Omarchy's idle service
+logs a wake only when the machine genuinely idled first, so this cannot fire on
+an idle cycle that never started, and waking your own *unlocked* machine is
+`attended` and silent.
 
 ## Install
 

@@ -1,0 +1,137 @@
+#!/bin/bash
+
+# omarchy:summary=Raise an EvilMaid Watch incident when an idle machine is woken
+# omarchy:args=[--probe [seconds]] [--simulate [--live]]
+# omarchy:hidden=true
+# omarchy:requires-sudo=true
+
+# The gap this closes: a laptop sitting open and locked, which never suspends
+# because nothing on Omarchy suspends on idle with the lid up. Someone walks
+# past, nudges the trackpad, reads the lock screen and leaves. No lid event, no
+# resume, and - unless they guess at the password three times - no failed
+# unlock. Nothing fired at all, which is the quietest possible version of
+# exactly the event this tool exists to catch.
+#
+# Omarchy's idle service logs a wake only when the machine genuinely idled
+# first (`idledThisCycle`), so this cannot fire on an idle cycle that never
+# started:
+#
+#   omarchy idle <iso> process-start: wake omarchy-system-wake
+#
+# Whether that wake matters is NOT decided here. The trigger reads the lock
+# state itself: locked means a grace period and a verdict, unlocked means
+# `attended` and silence. Waking your own unlocked machine therefore costs an
+# incident record and nothing else.
+
+set -euo pipefail
+
+readonly LIB_DIR=${OMARCHY_EMW_LIB:-/usr/local/lib/omarchy-emw}
+# shellcheck source=../lib/emw-common.sh
+source "$LIB_DIR/emw-common.sh"
+
+probe=false
+probe_seconds=120
+simulate=false
+sim_live=false
+
+while (($# > 0)); do
+  case $1 in
+  --probe)
+    probe=true
+    [[ ${2:-} =~ ^[0-9]+$ ]] && {
+      probe_seconds=$2
+      shift
+    }
+    shift
+    ;;
+  --simulate)
+    simulate=true
+    shift
+    ;;
+  --live)
+    sim_live=true
+    shift
+    ;;
+  *)
+    echo "usage: omarchy-emw-wakewatch [--probe [seconds]] [--simulate [--live]]" >&2
+    exit 64
+    ;;
+  esac
+done
+
+# Anchored on the idle service's own wording. `process-start: wake` is emitted
+# by cancelIdleCycle() only when the cycle had actually idled, which is the
+# distinction that matters - idle-cycle-cancel alone fires for other reasons.
+readonly WAKE_PATTERN='omarchy idle .* process-start: wake'
+
+is_wake() {
+  [[ $1 =~ $WAKE_PATTERN ]]
+}
+
+if $probe; then
+  echo "Probing for wake-from-idle lines for ${probe_seconds}s."
+  echo "Let the screen blank (idle), then move the mouse."
+  echo "---"
+  timeout "$probe_seconds" journalctl -f -n0 -o short-iso --no-pager 2>/dev/null |
+    while IFS= read -r line; do
+      if is_wake "$line"; then
+        echo "MATCH  $line"
+      elif [[ $line == *"omarchy idle"* ]]; then
+        echo "near   $line"
+      fi
+    done
+  echo "---"
+  echo "Probe finished."
+  exit 0
+fi
+
+if $simulate; then
+  echo "wake simulation: matcher self-test"
+  pass=0
+  fail=0
+  check() { # expect description line
+    local verdict
+    if is_wake "$3"; then verdict=fire; else verdict=ignore; fi
+    if [[ $verdict == "$1" ]]; then
+      printf '  ok    %-42s -> %s\n' "$2" "$verdict"
+      pass=$((pass + 1))
+    else
+      printf '  FAIL  %-42s -> %s (expected %s)\n' "$2" "$verdict" "$1"
+      fail=$((fail + 1))
+    fi
+  }
+  check fire "wake after a real idle cycle" \
+    'omarchy-shell[1093]: DEBUG qml: omarchy idle 2026-09-21T02:11:20.783Z process-start: wake omarchy-system-wake'
+  check ignore "idle cycle starting" \
+    'omarchy-shell[1093]: DEBUG qml: omarchy idle 2026-09-21T02:08:50.622Z idle-cycle-start: screensaver=150 lock=300'
+  check ignore "screensaver starting" \
+    'omarchy-shell[1093]: DEBUG qml: omarchy idle 2026-09-21T02:08:50.622Z process-start: screensaver omarchy-launch-screensaver'
+  check ignore "cancel with no prior idle" \
+    'omarchy-shell[1093]: DEBUG qml: omarchy idle 2026-09-21T02:08:50.622Z idle-cycle-cancel: requested'
+  check ignore "lock state change" \
+    'omarchy-shell[1093]: DEBUG qml: omarchy lock 2026-09-21T02:11:43.180Z session-locked=false'
+  echo "  $pass passed, $fail failed"
+  ((fail == 0)) || exit 1
+
+  if $sim_live; then
+    echo "wake simulation: injecting one tagged wake for the running watcher"
+    # Tagged and labelled SIMULATED: a synthetic line that passed for a real
+    # wake would mislead whoever reads this journal after an incident.
+    logger -t omarchy-emw-simulate \
+      "DEBUG qml: omarchy idle $(date -Is) process-start: wake omarchy-system-wake SIMULATED"
+    sleep 3
+    journalctl -u omarchy-emw-wake.service --since "-20s" --no-pager |
+      grep -E 'wake:|emw\[wake\]' | sed 's/^/  /' || echo "  (watcher logged nothing - is it running?)"
+  fi
+  exit 0
+fi
+
+echo "wake watcher: a wake from idle raises an incident (verdict decided by lock state)" >&2
+
+# -n0 so a restart does not replay an old wake and fire on boot.
+journalctl -f -n0 -o short-iso --no-pager 2>/dev/null |
+  while IFS= read -r line; do
+    is_wake "$line" || continue
+    echo "wake: machine woken from idle" >&2
+    omarchy-emw-trigger wake || true
+  done

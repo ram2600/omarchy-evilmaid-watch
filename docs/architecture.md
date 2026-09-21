@@ -8,6 +8,7 @@
 | `omarchy-emw-resume.service` | oneshot, `WantedBy=suspend.target` | Reports resume from suspend |
 | `omarchy-emw-faillock.service` | long-running unit | Follows the journal for failed unlocks |
 | `99-omarchy-emw-usb.rules` | udev rule | Fires on USB device add |
+| `omarchy-emw-wake.service` | long-running unit | Follows the journal for a wake from idle |
 | `omarchy-emw-trigger` | per-event process | The state machine: debounce, capture, classify, output |
 | `omarchy-emw-capture` | helper | `ffmpeg` still from the first real V4L2 capture device |
 | `omarchy-emw-notify` | helper | Root → desktop session bridge for toasts |

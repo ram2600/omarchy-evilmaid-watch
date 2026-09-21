@@ -73,6 +73,18 @@ mentioning the lock PAM service (`near`), firing nothing. Use it when the
 matcher needs to be checked against a distribution or lock screen whose wording
 differs.
 
+## The wake trigger
+
+```bash
+sudo omarchy-emw-wakewatch --simulate          # matcher self-test only
+sudo omarchy-emw-wakewatch --simulate --live   # + inject a wake for the running watcher
+sudo omarchy-emw-wakewatch --probe 300         # print what it would act on, firing nothing
+```
+
+For a real test: lock the screen, let it blank (idle `screensaver` is 150s by
+default), then move the mouse. Expect an incident whose verdict follows the
+lock state — `intruder` if you then walk away past the grace window.
+
 ## Other trigger paths
 
 ```bash
