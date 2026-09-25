@@ -62,6 +62,7 @@ units=(
   omarchy-emw.service
   omarchy-emw-faillock.service
   omarchy-emw-wake.service
+  omarchy-emw-boot.service
   omarchy-emw-resume.service
   omarchy-emw-spool.timer
   omarchy-emw-spool.service

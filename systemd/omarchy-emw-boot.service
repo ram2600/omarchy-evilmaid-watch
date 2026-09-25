@@ -1,0 +1,22 @@
+[Unit]
+Description=Report a power-on to Omarchy EvilMaid Watch
+# After the watcher so the journal reads in causal order, and after logind so
+# emw_session_id has something to ask. Deliberately NOT ordered after
+# graphical.target or the display manager: the photograph has to be taken while
+# whoever switched the machine on is still in front of it, not once their
+# desktop has finished coming up.
+After=omarchy-emw.service systemd-logind.service local-fs.target
+Wants=omarchy-emw.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/omarchy-emw-trigger boot
+# Must exceed BOOT_LOGIN_GRACE_SECONDS plus the capture. Blocking
+# multi-user.target for that long is safe: getty@.service is Type=idle with a
+# hard 5s cap and the display manager is not ordered after this unit, so the
+# login is never delayed by it.
+TimeoutStartSec=300
+SuccessExitStatus=0 64 75
+
+[Install]
+WantedBy=multi-user.target

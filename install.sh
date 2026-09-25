@@ -97,6 +97,29 @@ if [[ -f $CONF_FILE ]]; then
     echo "  they are running on those defaults; set one with:"
     echo "    sudo omarchy-emw-setup set <KEY> <VALUE>"
   fi
+
+  # A key that is PRESENT can still be missing a value this version introduced.
+  # TRIGGERS is the only list-valued setting, and a new source your config does
+  # not name is a feature installed but never armed - invisible to the check
+  # above, which only notices absent keys.
+  want_triggers=$(sed -n 's/^TRIGGERS=//p' "$REPO_DIR/etc/emw.conf.example" | head -1)
+  have_triggers=$(sed -n 's/^[[:space:]]*TRIGGERS=\([^#]*\).*/\1/p' "$CONF_FILE" |
+    tr -d '"'\''[:space:]' | head -1)
+  if [[ -n $want_triggers && -n $have_triggers ]]; then
+    missing_triggers=()
+    while IFS= read -r src; do
+      [[ -n $src ]] || continue
+      [[ ,$have_triggers, == *,$src,* ]] || missing_triggers+=("$src")
+    done < <(tr ',' '\n' <<<"$want_triggers")
+    if ((${#missing_triggers[@]} > 0)); then
+      echo "  triggers this version has that your TRIGGERS does not list: ${missing_triggers[*]}"
+      echo "  they are installed but NOT armed; to enable them:"
+      echo "    sudo omarchy-emw-setup set TRIGGERS $have_triggers,$(
+        IFS=,
+        echo "${missing_triggers[*]}"
+      )"
+    fi
+  fi
 else
   install -m 0600 -o root -g root "$REPO_DIR/etc/emw.conf.example" "$CONF_FILE"
   # Bake in the resolved user so the daemon never has to guess.
@@ -140,6 +163,7 @@ install -m 0644 "$REPO_DIR/systemd/omarchy-emw-spool.timer" "$UNIT_DIR/"
 install -m 0644 "$REPO_DIR/systemd/omarchy-emw-resume.service" "$UNIT_DIR/"
 install -m 0644 "$REPO_DIR/systemd/omarchy-emw-faillock.service" "$UNIT_DIR/"
 install -m 0644 "$REPO_DIR/systemd/omarchy-emw-wake.service" "$UNIT_DIR/"
+install -m 0644 "$REPO_DIR/systemd/omarchy-emw-boot.service" "$UNIT_DIR/"
 install -m 0644 "$REPO_DIR/systemd/99-omarchy-emw-usb.rules" /etc/udev/rules.d/
 install -d -m 0700 -o root -g root "$STATE_DIR/spool"
 systemctl daemon-reload
@@ -153,6 +177,11 @@ systemctl enable omarchy-emw-faillock.service
 systemctl restart omarchy-emw-faillock.service
 systemctl enable omarchy-emw-wake.service
 systemctl restart omarchy-emw-wake.service
+# enable only, never restart: the long-running watchers are restarted here
+# because they would otherwise keep executing the previous version, but this one
+# raises an incident when it runs - restarting it would photograph you and fire
+# an alert on every single re-install.
+systemctl enable omarchy-emw-boot.service
 udevadm control --reload-rules
 systemctl enable omarchy-emw.service
 # restart, not `enable --now`: --now only *starts* a stopped unit, so on a

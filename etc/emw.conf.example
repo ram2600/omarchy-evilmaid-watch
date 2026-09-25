@@ -27,12 +27,13 @@ EMW_USER=
 #   faillock  failed unlock attempts at the lock screen
 #   usb       a USB device being attached
 #   wake      the machine being woken after going idle
+#   boot      the machine being switched on
 #
 # `wake` exists because a laptop left open does not suspend on idle here: it
 # blanks and locks and stays awake, so nudging it produces no lid event and no
 # resume. Whether a wake matters is decided by the lock state like any other
 # trigger - waking your own unlocked machine is `attended` and silent.
-TRIGGERS=lid,resume,faillock,usb,wake
+TRIGGERS=lid,resume,faillock,usb,wake,boot
 
 # Log the incident locally but send nothing and run no hooks.
 PASSIVE_MODE=false
@@ -55,6 +56,30 @@ ALERT_WHEN_UNLOCKED=false
 # intrusion; three misses in two minutes at a locked screen is a signal.
 AUTH_FAILURE_THRESHOLD=3
 AUTH_FAILURE_WINDOW=120
+
+# --- Wake -----------------------------------------------------------------
+# How long the machine must have been idle before waking it counts as an event.
+# Below this, an idle/active pair is the compositor flapping rather than a
+# person - pairs 140ms apart have been observed.
+WAKE_MIN_IDLE_SECONDS=30
+
+# --- Boot -----------------------------------------------------------------
+# udev replays every attached USB device at boot, before any session exists,
+# which would otherwise raise an `unattended` incident and alert on every power
+# on. USB events this many seconds after boot are ignored; the power-on itself
+# is the `boot` trigger's job. 0 disables the suppression.
+BOOT_GRACE_SECONDS=60
+#
+# How long the boot trigger waits for a graphical session to appear and become
+# usable before calling the boot unattended. Separate from GRACE_SECONDS, which
+# asks "can whoever is here unlock an existing session": this one has to cover
+# the display manager and compositor starting, so it is much longer.
+#
+# What a power-on proves depends on your login setup. With a password prompt at
+# the display manager, a stranger never reaches a session and this settles
+# unattended with a photograph. With autologin they land straight in a session,
+# so it settles benign within seconds and proves very little.
+BOOT_LOGIN_GRACE_SECONDS=120
 
 # --- Capture --------------------------------------------------------------
 CAPTURE_PHOTO=true

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # omarchy:summary=Handle a physical-access incident: capture evidence, classify it, alert
-# omarchy:args=<lid|resume|faillock|usb|wake|manual>
+# omarchy:args=<lid|resume|faillock|usb|wake|boot|manual>
 # omarchy:examples=omarchy-emw-trigger lid
 # omarchy:hidden=true
 # omarchy:requires-sudo=true
@@ -22,7 +22,7 @@ source_name=${1:-manual}
 # Reject anything that is not a known source. udev and systemd hand us data we
 # did not generate, so this is validated rather than trusted.
 case $source_name in
-lid | resume | faillock | usb | wake | manual) ;;
+lid | resume | faillock | usb | wake | boot | manual) ;;
 *)
   echo "unknown trigger source: $source_name" >&2
   exit 64
@@ -37,7 +37,7 @@ if ! conf_bool ENABLED true; then
   exit 0
 fi
 
-triggers=$(conf_get TRIGGERS "lid,resume,faillock,usb,wake")
+triggers=$(conf_get TRIGGERS "lid,resume,faillock,usb,wake,boot")
 if [[ ,$triggers, != *,$source_name,* && $source_name != "manual" ]]; then
   log_journal "trigger not enabled in TRIGGERS, ignoring"
   exit 0
@@ -54,6 +54,34 @@ if [[ -n $user_home && -f "$user_home/.local/state/omarchy/toggles/emw-off" ]]; 
   exit 0
 fi
 
+# --- Coldplug suppression (usb only) ---------------------------------------
+# udev replays every already-attached device at boot. There is no session that
+# early, so the verdict is `unattended`, which always notifies and always
+# alerts: one boot produced two incidents 0.5s into userspace (the debounce race
+# below), two Telegrams, and one failed photo because both raced the camera.
+# Nothing had been plugged in - the machine had been switched on, which is the
+# `boot` trigger's job, once, with a login grace.
+#
+# Checked before the debounce so a suppressed coldplug never writes
+# .last-incident and poisons the window for the real boot incident behind it.
+if [[ $source_name == "usb" ]]; then
+  boot_grace=$(conf_get BOOT_GRACE_SECONDS 60)
+  [[ $boot_grace =~ ^[0-9]+$ ]] || boot_grace=60
+  # /proc/uptime, not `uptime -s`: it needs no correct wall clock, which a
+  # machine seconds into its boot may not have yet.
+  uptime_s=$(cut -d. -f1 /proc/uptime 2>/dev/null || true)
+  # Unreadable uptime must not suppress: failing toward recording is the right
+  # bias for a security tool.
+  [[ $uptime_s =~ ^[0-9]+$ ]] || uptime_s=$((boot_grace + 1))
+  if ((boot_grace > 0 && uptime_s < boot_grace)); then
+    # Logged, never silent: a suppressed trigger that left no trace is
+    # indistinguishable from a broken udev rule. Journal only - events.log is
+    # the incident record, and a non-incident there would dilute it.
+    log_journal "coldplug ${uptime_s}s after boot (< BOOT_GRACE_SECONDS=$boot_grace); ignoring"
+    exit 0
+  fi
+fi
+
 # --- Debounce --------------------------------------------------------------
 # Opening the lid after a suspend fires both the lid watcher and the resume
 # unit within milliseconds. Without this they would become two incidents.
@@ -63,6 +91,22 @@ debounce=$(conf_get DEBOUNCE_SECONDS 20)
 
 mkdir -p "$evidence_dir"
 chmod 700 "$evidence_dir"
+
+# One trigger at a time decides "new incident or coalesce". Without this, a USB
+# coldplug burst had two triggers (PIDs 749 and 750) read .last-incident before
+# either wrote it, so both created an incident in the same second and both
+# opened the camera - one photo failed. $$ in the directory name is what let
+# them both succeed, so the lock, not the name, is the fix.
+#
+# -w, not -n: a loser must WAIT for the decision and then coalesce. Giving up
+# would drop the corroborating source line that makes a burst readable.
+# fd 8 here, fd 9 in omarchy-emw-spool, so the two never read as the same lock.
+exec 8>"$evidence_dir/.debounce.lock"
+if ! flock -w 10 8; then
+  # Fail toward recording: a duplicate incident is noise, a dropped one is a
+  # missed intrusion, and this tool exists for the second case.
+  log_journal "debounce lock busy for 10s; proceeding unserialised"
+fi
 
 readonly STATE_FILE="$evidence_dir/.last-incident"
 now=$(date +%s)
@@ -89,6 +133,12 @@ chmod 700 "$incident_dir"
 
 printf '%s\n' "$source_name" >"$incident_dir/sources"
 printf '%s %s\n' "$now" "$incident_dir" >"$STATE_FILE"
+
+# Released here, before the slow work. The decision is on disk, so a second
+# source arriving during capture coalesces into this incident; holding the lock
+# through capture and the grace loop would turn a burst into a queue of full
+# incidents instead of collapsing it into one.
+exec 8>&-
 
 log_journal "new incident $stamp-$$"
 
@@ -156,9 +206,49 @@ grace=$(conf_get GRACE_SECONDS 60)
 
 case $locked_at_trigger in
 no-session)
-  # Triggered with nobody logged in - a boot or a tty-only state. Nothing can
-  # "unlock" to clear this, so it stands on its own as suspicious.
-  verdict=unattended
+  if [[ $source_name == "boot" ]]; then
+    # A power-on is not evidence of anything by itself - the owner boots this
+    # machine daily. What separates the two is what happens next: does a
+    # graphical session appear, and does it become usable? So unlike every
+    # other source, `boot` does not settle on `unattended` immediately.
+    #
+    # What this proves depends on the machine's login setup. With a password
+    # prompt at the display manager, a stranger who powers the machine on never
+    # reaches a session and this settles `unattended` with a photograph. With
+    # autologin they land straight in an unlocked session and it settles
+    # `benign` within seconds, proving very little.
+    boot_login_grace=$(conf_get BOOT_LOGIN_GRACE_SECONDS 120)
+    [[ $boot_login_grace =~ ^[0-9]+$ ]] || boot_login_grace=120
+    log_journal "boot: waiting up to ${boot_login_grace}s for a session"
+
+    verdict=unattended
+    saw_session=no
+    deadline=$(($(date +%s) + boot_login_grace))
+    while (($(date +%s) < deadline)); do
+      session_id=$(emw_session_id || true)
+      if [[ -n $session_id ]]; then
+        saw_session=yes
+        # tries=1: this loop is the retry, same reasoning as the grace loop.
+        if [[ $(emw_locked "$session_id" 1) == "no" ]]; then
+          verdict=benign
+          break
+        fi
+        # A session that exists but is locked is the lid case: keep waiting.
+        verdict=intruder
+      fi
+      sleep 2
+    done
+
+    # The verdict alone cannot distinguish "booted to a tty" from "booted to a
+    # lock screen nobody opened", and an investigation needs to know which.
+    printf 'session_seen=%s verdict=%s waited=%ss\n' \
+      "$saw_session" "$verdict" "$boot_login_grace" >"$incident_dir/boot-wait"
+    log_journal "boot: session_seen=$saw_session verdict=$verdict"
+  else
+    # Nobody logged in and nothing can "unlock" to clear it, so it stands on
+    # its own as suspicious.
+    verdict=unattended
+  fi
   ;;
 no)
   # The session was already unlocked, so the machine was open to anyone

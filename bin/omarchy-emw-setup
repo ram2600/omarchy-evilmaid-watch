@@ -350,7 +350,8 @@ set_value() {
   case $key in
   GRACE_SECONDS | DEBOUNCE_SECONDS | RETAIN_DAYS | BENIGN_RETAIN_DAYS | \
     SPOOL_MAX_AGE_HOURS | PHOTO_WARMUP_FRAMES | AUTH_FAILURE_THRESHOLD | \
-    AUTH_FAILURE_WINDOW)
+    AUTH_FAILURE_WINDOW | WAKE_MIN_IDLE_SECONDS | BOOT_GRACE_SECONDS | \
+    BOOT_LOGIN_GRACE_SECONDS)
     [[ $value =~ ^[0-9]+$ ]] || {
       echo "$key must be a whole number" >&2
       exit 64
