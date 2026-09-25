@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # omarchy:summary=Raise an EvilMaid Watch incident when an idle machine is woken
-# omarchy:args=[--probe [seconds]] [--simulate [--live]]
+# omarchy:args=[--probe [seconds]] [--simulate [--live] [--delay <seconds>]]
 # omarchy:hidden=true
 # omarchy:requires-sudo=true
 
@@ -9,19 +9,33 @@
 # because nothing on Omarchy suspends on idle with the lid up. Someone walks
 # past, nudges the trackpad, reads the lock screen and leaves. No lid event, no
 # resume, and - unless they guess at the password three times - no failed
-# unlock. Nothing fired at all, which is the quietest possible version of
+# unlock. Nothing fires at all, which is the quietest possible version of
 # exactly the event this tool exists to catch.
 #
-# Omarchy's idle service logs a wake only when the machine genuinely idled
-# first (`idledThisCycle`), so this cannot fire on an idle cycle that never
-# started:
+# WHY THIS WATCHES idle-monitor RATHER THAN THE WAKE PROCESS
 #
-#   omarchy idle <iso> process-start: wake omarchy-system-wake
+# The first version of this matched `process-start: wake omarchy-system-wake`
+# and could never fire for the case above. That line comes only from the idle
+# service's cancelIdleCycle(), and only when idledThisCycle is true - but
+# lockSystem() clears that flag when the idle lock fires, and the screensaver
+# whose dismissal would call cancelIdleCycle never launches on a locked session
+# (its command self-guards on `omarchy-shell lock isLocked`). So on activity
+# handleIdleChanged() logs `idle-monitor: active` and handleActiveSignal()
+# returns immediately at `if (!root.idledThisCycle) return`.
 #
-# Whether that wake matters is NOT decided here. The trigger reads the lock
-# state itself: locked means a grace period and a verdict, unlocked means
-# `attended` and silence. Waking your own unlocked machine therefore costs an
-# incident record and nothing else.
+# Measured: 13:11:10 `idle-monitor: idle` with the screen locked, then
+# 13:41:17 `idle-monitor: active` thirty minutes later, with no
+# idle-cycle-cancel and no wake process in between, and no incident. The only
+# time the old matcher ever fired, the session was unlocked and the verdict was
+# `attended` - it fired exactly when it did not matter and never when it did.
+#
+# `idle-monitor: active` is the only shell-side signal on the locked-wake path,
+# so this watches for it - but it is noisy, and three of its sources are not
+# people. See the state machine below.
+#
+# Whether a wake matters is NOT decided here. The trigger reads the lock state
+# itself: locked means a grace period and a verdict, unlocked means `attended`
+# and silence.
 
 set -euo pipefail
 
@@ -33,6 +47,8 @@ probe=false
 probe_seconds=120
 simulate=false
 sim_live=false
+sim_delay=0
+dry_run=false
 
 while (($# > 0)); do
   case $1 in
@@ -52,86 +68,330 @@ while (($# > 0)); do
     sim_live=true
     shift
     ;;
+  --delay)
+    sim_delay=${2:-0}
+    [[ $sim_delay =~ ^[0-9]+$ ]] || {
+      echo "--delay takes seconds" >&2
+      exit 64
+    }
+    shift 2
+    ;;
   *)
-    echo "usage: omarchy-emw-wakewatch [--probe [seconds]] [--simulate [--live]]" >&2
+    echo "usage: omarchy-emw-wakewatch [--probe [seconds]] [--simulate [--live] [--delay <seconds>]]" >&2
     exit 64
     ;;
   esac
 done
 
-# Anchored on the idle service's own wording. `process-start: wake` is emitted
-# by cancelIdleCycle() only when the cycle had actually idled, which is the
-# distinction that matters - idle-cycle-cancel alone fires for other reasons.
+# --- Patterns ---------------------------------------------------------------
+# handleIdleChanged() logs these unconditionally on every isIdle change.
+readonly IDLE_PATTERN='omarchy idle .* idle-monitor: idle'
+readonly ACTIVE_PATTERN='omarchy idle .* idle-monitor: active'
+# handleActiveSignal()'s own line, ~1ms after an `active` that is NOT a person:
+# the compositor reporting activity because the screensaver is being launched.
+# Note the different event name (idle-monitor-active:), so it cannot match
+# ACTIVE_PATTERN - which is exactly what makes it usable as a suppressor.
+readonly ARMED_PATTERN='omarchy idle .* idle-monitor-active:'
+readonly READY_PATTERN='omarchy idle .* service-ready'
+# Kept as a secondary signal: still a genuine wake (an unlocked screensaver
+# dismissed), self-validating because cancelIdleCycle only logs it when the
+# cycle had actually idled, and it does occur on a locked wake that lands
+# mid-cycle - twice in a month of this machine's journal.
 readonly WAKE_PATTERN='omarchy idle .* process-start: wake'
 
-is_wake() {
-  [[ $1 =~ $WAKE_PATTERN ]]
+# Absorbs the flap: an `active` that the screensaver caused is followed by the
+# armed line about a millisecond later, so a candidate waits this long for a
+# contradiction before it fires. Not a config key - it is a property of the
+# log stream, not a policy.
+readonly CONFIRM_SECONDS=2
+
+min_idle=$(conf_get WAKE_MIN_IDLE_SECONDS 30)
+[[ $min_idle =~ ^[0-9]+$ ]] || min_idle=30
+dedupe=$(conf_get DEBOUNCE_SECONDS 20)
+[[ $dedupe =~ ^[0-9]+$ ]] || dedupe=20
+
+# --- State machine ----------------------------------------------------------
+# Explicit flags rather than 0-as-absent. Overloading 0 to mean "no idle
+# recorded" makes a legitimate timestamp of 0 indistinguishable from absence -
+# harmless against $EPOCHSECONDS, but it silently broke the self-test's
+# synthetic clock, which is exactly the kind of state bug this watcher must not
+# have.
+idle_seen=false
+idle_at=0
+pending=false
+pending_at=0
+pending_idle_for=0
+fired_once=false
+last_fired=0
+last_action=""
+# Incremented by fire_wake itself so the self-test counts what actually fired,
+# rather than inspecting last_action afterwards - which cannot tell a fresh fire
+# from a stale one.
+fire_count=0
+
+# fire_wake <idle-seconds>
+# Logs a SUMMARY and never the matched line: this process's stderr goes to the
+# journal it is following, so echoing a matched line back would re-match it and
+# loop forever.
+fire_wake() {
+  local idle_for=$1
+  last_action="fire"
+  fired_once=true
+  last_fired=$2
+  fire_count=$((fire_count + 1))
+  if $dry_run; then
+    return 0
+  fi
+  echo "wake: woken after ${idle_for}s idle" >&2
+  omarchy-emw-trigger wake || true
 }
 
+# consume_line <line> <now>
+consume_line() {
+  local line=$1 now=$2 idle_for
+
+  if [[ $line =~ $READY_PATTERN ]]; then
+    # A shell restart must RESET, not merely be ignored: the shell can restart
+    # while the previous instance was idle, and every start logs
+    # `idle-monitor: active` about 0.2s later. Without this, every restart -
+    # theme change, plugin reload, crash - would look like a wake.
+    idle_seen=false
+    pending=false
+    last_action="reset"
+    return 0
+  fi
+
+  if [[ $line =~ $ARMED_PATTERN ]]; then
+    # The idle cycle is still armed, so the idle is not over. Cancel any
+    # candidate and restore the clock it consumed.
+    if $pending; then
+      idle_seen=true
+      idle_at=$((now - pending_idle_for))
+      pending=false
+      last_action="armed-cancel"
+    else
+      last_action="armed"
+    fi
+    return 0
+  fi
+
+  if [[ $line =~ $IDLE_PATTERN ]]; then
+    # Keep the earliest, so the duration measures the whole idle period rather
+    # than the last of several `idle` lines.
+    $idle_seen || {
+      idle_seen=true
+      idle_at=$now
+    }
+    last_action="idle"
+    return 0
+  fi
+
+  if [[ $line =~ $WAKE_PATTERN ]]; then
+    if $fired_once && ((now - last_fired < dedupe)); then
+      last_action="ignore-dedupe"
+      return 0
+    fi
+    idle_for=0
+    $idle_seen && idle_for=$((now - idle_at))
+    idle_seen=false
+    pending=false
+    fire_wake "$idle_for" "$now"
+    return 0
+  fi
+
+  if [[ $line =~ $ACTIVE_PATTERN ]]; then
+    if ! $idle_seen; then
+      # Shell startup, a stay-awake toggle, or a repeated `active` - none of
+      # them mean a person arrived.
+      last_action="ignore-no-idle"
+      return 0
+    fi
+
+    idle_for=$((now - idle_at))
+    idle_seen=false
+
+    if ((idle_for < min_idle)); then
+      # An idle/active pair 140ms apart is the compositor, not a person.
+      last_action="ignore-too-short"
+      return 0
+    fi
+
+    if $fired_once && ((now - last_fired < dedupe)); then
+      last_action="ignore-dedupe"
+      return 0
+    fi
+
+    pending=true
+    pending_at=$((now + CONFIRM_SECONDS))
+    pending_idle_for=$idle_for
+    last_action="pending"
+    return 0
+  fi
+
+  last_action="near"
+  return 0
+}
+
+# tick <now> - fires a candidate that survived the confirm window.
+tick() {
+  local now=$1
+  if $pending && ((now >= pending_at)); then
+    pending=false
+    fire_wake "$pending_idle_for" "$now"
+  fi
+}
+
+# --- Probe ------------------------------------------------------------------
 if $probe; then
-  echo "Probing for wake-from-idle lines for ${probe_seconds}s."
+  dry_run=true
+  echo "Probing wake decisions for ${probe_seconds}s."
   echo "Let the screen blank (idle), then move the mouse."
+  echo "Idle must last ${min_idle}s for a wake to count."
   echo "---"
   timeout "$probe_seconds" journalctl -f -n0 -o short-iso --no-pager 2>/dev/null |
     while IFS= read -r line; do
-      if is_wake "$line"; then
-        echo "MATCH  $line"
-      elif [[ $line == *"omarchy idle"* ]]; then
-        echo "near   $line"
-      fi
+      [[ $line == *"omarchy idle"* ]] || continue
+      consume_line "$line" "$EPOCHSECONDS"
+      tick "$EPOCHSECONDS"
+      printf '%-16s %s\n' "$last_action" "${line#* }"
     done
   echo "---"
   echo "Probe finished."
   exit 0
 fi
 
+# --- Simulation -------------------------------------------------------------
+# Scenarios replay verbatim journal lines from this machine through the same
+# consume_line/tick the daemon uses, on a synthetic clock. A simulation that
+# reimplemented the state machine would only prove the reimplementation works.
 if $simulate; then
-  echo "wake simulation: matcher self-test"
+  L_IDLE='omarchy-shell[1093]:  DEBUG qml: omarchy idle 2026-09-25T17:11:10.344Z idle-monitor: idle'
+  L_ACTIVE='omarchy-shell[1093]:  DEBUG qml: omarchy idle 2026-09-25T17:41:17.292Z idle-monitor: active'
+  L_ARMED='omarchy-shell[1093]:  DEBUG qml: omarchy idle 2026-09-24T02:46:08.140Z idle-monitor-active: screensaver cycle remains armed'
+  L_READY='omarchy-shell[1093]:  DEBUG qml: omarchy idle 2026-09-25T17:07:29.686Z service-ready'
+  L_WAKE='omarchy-shell[1093]:  DEBUG qml: omarchy idle 2026-09-24T02:46:40.342Z process-start: wake omarchy-system-wake'
+  L_CYCLE='omarchy-shell[1093]:  DEBUG qml: omarchy idle 2026-09-25T17:11:10.345Z idle-cycle-start: screensaver=150 lock=300'
+  L_SCRSVR='omarchy-shell[1093]:  DEBUG qml: omarchy idle 2026-09-25T17:11:10.345Z process-start: screensaver [[ $(omarchy-shell lock isLocked 2>/dev/null) == "true" ]] || omarchy-launch-screensaver'
+  L_CANCEL='omarchy-shell[1093]:  DEBUG qml: omarchy idle 2026-09-24T02:50:49.773Z idle-cycle-cancel: stay-awake'
+  L_LOCK='omarchy-shell[1093]:  DEBUG qml: omarchy lock 2026-09-25T17:41:29.044Z session-locked=false'
+
+  dry_run=true
   pass=0
   fail=0
-  check() { # expect description line
-    local verdict
-    if is_wake "$3"; then verdict=fire; else verdict=ignore; fi
-    if [[ $verdict == "$1" ]]; then
-      printf '  ok    %-42s -> %s\n' "$2" "$verdict"
+
+  # scenario <expected-fires> <description> <offset:line>...
+  scenario() {
+    local want=$1 desc=$2
+    shift 2
+    idle_seen=false
+    pending=false
+    pending_idle_for=0
+    fired_once=false
+    last_fired=0
+    fire_count=0
+    local last_now=0 spec offset line
+    for spec in "$@"; do
+      offset=${spec%%:*}
+      line=${spec#*:}
+      consume_line "$line" "$offset"
+      tick "$offset"
+      last_now=$offset
+    done
+    # Let any surviving candidate mature, as the read loop's 1s tick would.
+    tick $((last_now + CONFIRM_SECONDS + 1))
+    if ((fire_count == want)); then
+      printf '  ok    %-52s fires=%s\n' "$desc" "$fire_count"
       pass=$((pass + 1))
     else
-      printf '  FAIL  %-42s -> %s (expected %s)\n' "$2" "$verdict" "$1"
+      printf '  FAIL  %-52s fires=%s (expected %s)\n' "$desc" "$fire_count" "$want"
       fail=$((fail + 1))
     fi
   }
-  check fire "wake after a real idle cycle" \
-    'omarchy-shell[1093]: DEBUG qml: omarchy idle 2026-09-21T02:11:20.783Z process-start: wake omarchy-system-wake'
-  check ignore "idle cycle starting" \
-    'omarchy-shell[1093]: DEBUG qml: omarchy idle 2026-09-21T02:08:50.622Z idle-cycle-start: screensaver=150 lock=300'
-  check ignore "screensaver starting" \
-    'omarchy-shell[1093]: DEBUG qml: omarchy idle 2026-09-21T02:08:50.622Z process-start: screensaver omarchy-launch-screensaver'
-  check ignore "cancel with no prior idle" \
-    'omarchy-shell[1093]: DEBUG qml: omarchy idle 2026-09-21T02:08:50.622Z idle-cycle-cancel: requested'
-  check ignore "lock state change" \
-    'omarchy-shell[1093]: DEBUG qml: omarchy lock 2026-09-21T02:11:43.180Z session-locked=false'
+
+  echo "wake simulation: state machine self-test (WAKE_MIN_IDLE_SECONDS=$min_idle)"
+  scenario 1 "locked 30min idle then woken (the reported miss)" "0:$L_IDLE" "1807:$L_ACTIVE"
+  scenario 1 "idle 45s then woken" "0:$L_IDLE" "45:$L_ACTIVE"
+  scenario 1 "legacy process-start: wake" "0:$L_IDLE" "200:$L_WAKE"
+  scenario 0 "shell start: service-ready then active" "0:$L_READY" "1:$L_ACTIVE"
+  scenario 0 "idle flap 140ms apart, armed follows" "0:$L_IDLE" "0:$L_ACTIVE" "0:$L_ARMED"
+  scenario 0 "repeated active, no preceding idle" "0:$L_ACTIVE" "1:$L_ACTIVE"
+  scenario 0 "shell restarts while idle" "0:$L_IDLE" "100:$L_READY" "101:$L_ACTIVE"
+  scenario 0 "late flap: armed cancels a mature candidate" "0:$L_IDLE" "95:$L_ACTIVE" "95:$L_ARMED"
+  scenario 1 "two actives after one idle fire once" "0:$L_IDLE" "100:$L_ACTIVE" "101:$L_ACTIVE"
+  scenario 0 "idle cycle bookkeeping only" "0:$L_CYCLE" "0:$L_SCRSVR" "1:$L_CANCEL" "2:$L_LOCK"
   echo "  $pass passed, $fail failed"
   ((fail == 0)) || exit 1
 
   if $sim_live; then
-    echo "wake simulation: injecting one tagged wake for the running watcher"
-    # Tagged and labelled SIMULATED: a synthetic line that passed for a real
-    # wake would mislead whoever reads this journal after an incident.
+    dry_run=false
+    sid=$(emw_session_id || true)
+    locked=unknown
+    [[ -n $sid ]] && locked=$(emw_locked "$sid" 1)
+    if [[ $locked != "yes" ]]; then
+      echo "wake simulation: session is not locked (lock state: $locked)."
+      if ((sim_delay == 0)); then
+        echo "  The verdict will be 'attended' and no toast or alert will be sent."
+        echo "  To exercise the full intruder path, lock the screen during the delay:"
+        echo "    sudo omarchy-emw-wakewatch --simulate --live --delay 20"
+      fi
+    fi
+
+    grace=$(conf_get GRACE_SECONDS 60)
+    [[ $grace =~ ^[0-9]+$ ]] || grace=60
+    if ((sim_delay > 0)); then
+      stay_until=$(date -d "+$((sim_delay + min_idle + grace + 8)) seconds" '+%H:%M:%S' 2>/dev/null || echo "")
+      echo "wake simulation: lock your screen now - injecting in ${sim_delay}s"
+      echo "  Then STAY LOCKED until about ${stay_until:-later}."
+      echo "  Unlocking inside the ${grace}s grace window is the trusted unlock this tool"
+      echo "  is built around: the verdict becomes 'benign' and nothing is sent. That is"
+      echo "  correct behaviour, and it is indistinguishable from a broken run."
+      sleep "$sim_delay"
+    fi
+
+    since=$(date '+%Y-%m-%d %H:%M:%S')
+    # Tagged and labelled SIMULATED: these lines carry the strings the matcher
+    # keys on so the running daemon reacts exactly as it would to the real
+    # thing, but a synthetic line that passed for a genuine idle transition
+    # would corrupt the log an evil-maid investigation reads.
+    echo "wake simulation: injecting an idle, waiting ${min_idle}s, then a wake"
     logger -t omarchy-emw-simulate \
-      "DEBUG qml: omarchy idle $(date -Is) process-start: wake omarchy-system-wake SIMULATED"
-    sleep 3
-    journalctl -u omarchy-emw-wake.service --since "-20s" --no-pager |
-      grep -E 'wake:|emw\[wake\]' | sed 's/^/  /' || echo "  (watcher logged nothing - is it running?)"
+      "DEBUG qml: omarchy idle $(date -Is) idle-monitor: idle SIMULATED"
+    sleep $((min_idle + 2))
+    logger -t omarchy-emw-simulate \
+      "DEBUG qml: omarchy idle $(date -Is) idle-monitor: active SIMULATED"
+
+    echo "wake simulation: injected; waiting up to $((grace + 25))s for the verdict"
+    deadline=$(($(date +%s) + grace + 25))
+    while (($(date +%s) < deadline)); do
+      journalctl -u omarchy-emw-wake.service --since "$since" --no-pager 2>/dev/null |
+        grep -q 'incident recorded' && break
+      sleep 2
+    done
+    echo "wake simulation: what the daemon did:"
+    journalctl -u omarchy-emw-wake.service --since "$since" --no-pager 2>/dev/null |
+      grep -E 'wake:|new incident|locked at trigger|photo|verdict|toast|alert|incident recorded' |
+      sed 's/^[A-Z][a-z][a-z] [0-9 ][0-9] //; s/^/  /' || true
   fi
   exit 0
 fi
 
-echo "wake watcher: a wake from idle raises an incident (verdict decided by lock state)" >&2
+# --- Watch ------------------------------------------------------------------
+echo "wake watcher: a wake after ${min_idle}s idle raises an incident (verdict decided by lock state)" >&2
 
-# -n0 so a restart does not replay an old wake and fire on boot.
+# -n0 so a restart does not replay an old transition and fire on boot.
+# -o short-iso, not -o json: these MESSAGE fields are non-UTF8 with ANSI
+# escapes, and json renders them as an array of ints.
 journalctl -f -n0 -o short-iso --no-pager 2>/dev/null |
-  while IFS= read -r line; do
-    is_wake "$line" || continue
-    echo "wake: machine woken from idle" >&2
-    omarchy-emw-trigger wake || true
+  while true; do
+    if IFS= read -r -t 1 line; then
+      # Cheap prefilter before any regex: this loop sees every journal line.
+      [[ $line == *"omarchy idle"* ]] || continue
+      consume_line "$line" "$EPOCHSECONDS"
+    else
+      rc=$?
+      # >128 is read's timeout; anything else is EOF - journalctl died, and the
+      # unit's Restart=always is the right answer to that.
+      ((rc > 128)) || break
+      tick "$EPOCHSECONDS"
+    fi
   done
