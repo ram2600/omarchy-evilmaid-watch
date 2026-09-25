@@ -87,6 +87,34 @@ else
   spool_file=""
 fi
 
+# --- Is a photograph going with this? --------------------------------------
+# Decided ONCE, here, and reported in every log line below. Both backends used
+# to re-test this independently, so a log line could have claimed a photo the
+# send did not actually attach.
+#
+# Why it is logged at all: "sent via telegram" alone made it impossible to tell,
+# days later, whether a delivered alert carried its photograph - and the photo
+# is the only part of an alert that identifies a person. A spooled alert is the
+# case that really needs this: it can drain after omarchy-emw-prune has deleted
+# the evidence, silently degrading from sendPhoto to sendMessage.
+photo_bytes=0
+if [[ -n $photo && -s $photo ]]; then
+  photo_bytes=$(stat -c%s "$photo" 2>/dev/null || echo 0)
+  attach="photo ${photo_bytes}B"
+  tg_endpoint=sendPhoto
+  ntfy_mode=upload-file
+elif [[ -z $photo ]]; then
+  attach="no photo (none captured)"
+elif [[ ! -e $photo ]]; then
+  attach="no photo (evidence gone: $photo)"
+else
+  attach="no photo (zero bytes)"
+fi
+[[ -n ${tg_endpoint:-} ]] || {
+  tg_endpoint=sendMessage
+  ntfy_mode=data
+}
+
 channel=$(conf_get ALERT_CHANNEL none)
 if [[ $channel == "none" ]]; then
   log "ALERT_CHANNEL=none; not sending"
@@ -112,7 +140,7 @@ spool_it() {
     '{incident: $incident, verdict: $verdict, host: $host, ts: $ts,
       sources: $sources, photo: $photo}' >"$dest"
   chmod 600 "$dest"
-  log "spooled to $dest"
+  log "spooled to $dest ($attach)"
 }
 
 if $spool_only; then
@@ -146,7 +174,7 @@ retry = 1
   [[ -n $token ]] && cfg+="header = \"Authorization: Bearer $(sanitize "$token")\"
 "
 
-  if [[ -n $photo && -s $photo ]]; then
+  if ((photo_bytes > 0)); then
     cfg+="header = \"Filename: $(sanitize "$incident").jpg\"
 upload-file = \"$photo\"
 "
@@ -170,7 +198,7 @@ send_telegram() {
   # The token sits in the URL, so the whole config goes in over stdin. It never
   # appears in argv, where /proc/<pid>/cmdline would expose it to every process
   # on the machine for the duration of the send.
-  if [[ -n $photo && -s $photo ]]; then
+  if ((photo_bytes > 0)); then
     cfg="url = \"https://api.telegram.org/bot$(sanitize "$token")/sendPhoto\"
 form = \"chat_id=$(sanitize "$chat")\"
 form = \"caption=$(printf '%s' "$body" | tr '\n' ' ')\"
@@ -199,10 +227,10 @@ failed=false
 case $channel in
 ntfy | both)
   if send_ntfy; then
-    log "sent via ntfy"
+    log "sent via ntfy ($ntfy_mode; $attach)"
     sent=true
   else
-    log "ntfy send failed"
+    log "ntfy send failed ($attach)"
     failed=true
   fi
   ;;
@@ -211,10 +239,10 @@ esac
 case $channel in
 telegram | both)
   if send_telegram; then
-    log "sent via telegram"
+    log "sent via telegram ($tg_endpoint; $attach)"
     sent=true
   else
-    log "telegram send failed"
+    log "telegram send failed ($attach)"
     failed=true
   fi
   ;;
