@@ -9,6 +9,7 @@
 | `omarchy-emw-faillock.service` | long-running unit | Follows the journal for failed unlocks |
 | `99-omarchy-emw-usb.rules` | udev rule | Fires on USB device add |
 | `omarchy-emw-wake.service` | long-running unit | Follows the journal for a wake from idle |
+| `omarchy-emw-boot.service` | oneshot at boot | Reports a power-on |
 | `omarchy-emw-trigger` | per-event process | The state machine: debounce, capture, classify, output |
 | `omarchy-emw-capture` | helper | `ffmpeg` still from the first real V4L2 capture device |
 | `omarchy-emw-notify` | helper | Root → desktop session bridge for toasts |
@@ -91,6 +92,42 @@ the work and flooding the journal with PAM sessions.
 threshold (3 failures) is far below it, but attempts made *during* a lockout
 still count and push the unlock deadline forward, so a person who keeps
 retrying stays locked out indefinitely. This is why `--simulate` exists.
+
+**A wake from a locked session logs nothing that names a wake.** Omarchy's idle
+service only spawns its wake process from `cancelIdleCycle()`, and only while
+`idledThisCycle` — but `lockSystem()` clears that flag, and the screensaver
+whose dismissal would call it never launches on a locked session (its command
+self-guards on `isLocked`). So the first wake watcher, which matched
+`process-start: wake`, could never fire for the case it existed to cover: it
+fired only with the session unlocked, where the verdict is `attended`. The
+matcher now tracks `idle-monitor: idle` → `idle-monitor: active`, which is the
+only shell-side signal on that path, and filters its three non-human sources:
+shell startup, stay-awake toggles, and the screensaver-launch flap (which is
+distinguishable because it logs `idle-monitor-active:`, a different event name).
+
+**A journal-following watcher must never log a line it matched.** Its own stderr
+goes to the journal it is reading, so echoing a matched line back re-matches it
+forever. These watchers log summaries only.
+
+**The debounce was a read-compare-write with no lock.** A USB coldplug burst had
+two triggers read `.last-incident` before either wrote it, so both created an
+incident in the same second and both opened the camera — one photo failed. The
+decision is now inside `flock`, released before capture so a burst still
+collapses into one incident instead of queueing.
+
+**udev replays every attached device at boot,** before any session exists, so
+every power-on produced `unattended` USB incidents and alerts with nothing
+plugged in. `BOOT_GRACE_SECONDS` suppresses USB triggers that early; the
+power-on itself is the `boot` trigger's job.
+
+**A desktop notification image must be a `file://` URI.** A bare absolute path
+is accepted by `omarchy-notification-send`, sent as the `image-path` hint, and
+then silently dropped — the server stores `image=""` and the toast shows the
+glyph. Every EMW toast did this, and `toast delivered` looked like success.
+Measured against the persisted notification JSON: `--image /path` → `image=""`,
+`--image file:///path` → works. The server then copies the file into
+`~/.local/state/omarchy/notifications/images/` and rewrites the entry, which is
+why staging can stay on tmpfs — the durable copy is Omarchy's.
 
 ## Alert delivery
 

@@ -76,14 +76,45 @@ differs.
 ## The wake trigger
 
 ```bash
-sudo omarchy-emw-wakewatch --simulate          # matcher self-test only
-sudo omarchy-emw-wakewatch --simulate --live   # + inject a wake for the running watcher
-sudo omarchy-emw-wakewatch --probe 300         # print what it would act on, firing nothing
+sudo omarchy-emw-wakewatch --simulate                     # state machine self-test
+sudo omarchy-emw-wakewatch --simulate --live --delay 20   # + drive the running watcher
+sudo omarchy-emw-wakewatch --probe 300                    # print its decision per line
 ```
 
-For a real test: lock the screen, let it blank (idle `screensaver` is 150s by
-default), then move the mouse. Expect an incident whose verdict follows the
-lock state — `intruder` if you then walk away past the grace window.
+The self-test replays verbatim journal lines through the same `consume_line`
+the daemon uses, and the must-not-fire cases matter as much as the rest: shell
+startup, a repeated `active`, a 140 ms idle flap, and a shell restart that
+happened while the machine was idle.
+
+**The real acceptance test needs a locked screen and patience.** Lock it, then
+do not touch the machine for more than 150s (`min(screensaver, lock)`) until
+`journalctl -f | grep idle-monitor` shows `idle-monitor: idle`. Wait
+`WAKE_MIN_IDLE_SECONDS` more, nudge the trackpad, and leave it at the lock
+screen past `GRACE_SECONDS`. Expect `wake: woken after Ns idle` →
+`locked at trigger: yes` → `intruder` → toast with photo → Telegram.
+
+Confirm `process-start: wake` is **absent** from that window. That absence is
+the proof the original matcher could never have fired.
+
+## The boot trigger
+
+Reboot and log in promptly: expect one incident, `boot: session_seen=yes`,
+verdict `benign`, silence. The `boot-wait` file in the incident directory
+records which shape it was.
+
+For the unattended path without rebooting, point the trigger at a user with no
+seated session (`lib/emw-common.sh` honours `EMW_CONFIG_FILE`):
+
+```bash
+sudo install -m600 /etc/omarchy/emw.conf /root/emw-boot-test.conf
+sudo sed -i 's/^EMW_USER=.*/EMW_USER=nobody/; s/^BOOT_LOGIN_GRACE_SECONDS=.*/BOOT_LOGIN_GRACE_SECONDS=20/' /root/emw-boot-test.conf
+sudo env EMW_CONFIG_FILE=/root/emw-boot-test.conf omarchy-emw-trigger boot
+```
+
+## USB at boot
+
+Reboot and confirm `coldplug Ns after boot … ignoring` in the journal with no
+incident, then plug a device in while awake and confirm a normal incident.
 
 ## Other trigger paths
 
@@ -127,6 +158,23 @@ Two traps, both of which produced false failures the first time:
    `omarchy-emw-spool` directly.
 
 ## Verifying the toast photo
+
+The image argument must be a `file://` URI; a bare path is silently dropped by
+the notification server. To re-check that on a future Quickshell version, send
+one notification each way and read the persisted JSON:
+
+```bash
+N=~/.local/state/omarchy/notifications
+omarchy-notification-send --image "/path/to.png"        "probe A" "bare path"
+omarchy-notification-send --image "file:///path/to.png" "probe B" "file URI"
+jq -c '{summary,image,appIcon}' "$(ls -t $N/*.json $N/history/*.json | head -1)"
+ls $N/images/
+```
+
+A working form leaves a non-empty `image` and a copy in `images/`. On screen,
+`NotificationCard.qml` shows the glyph only while the image has not loaded, so
+glyph → thumbnail is the load succeeding.
+
 
 The toast thumbnail is staged outside the 0700 evidence directory, so an
 incident should leave a readable copy:

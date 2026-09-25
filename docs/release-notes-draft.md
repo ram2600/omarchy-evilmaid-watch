@@ -10,8 +10,8 @@ that would be pasted into the release.
 - [ ] Decide the tag: `v0.1.0` assumed below
 - [ ] Replace `<you>` in the README clone URL
 - [ ] Confirm behaviour on a non-Asahi laptop, or scope the claims to Asahi
-- [ ] Decide whether USB triggering is on by default (it is currently, and it
-      is the noisiest source)
+- [x] USB default settled: on, with `BOOT_GRACE_SECONDS` suppressing the
+      coldplug burst at boot that was its only real noise source
 - [ ] Screenshot or sample toast + Telegram alert for the release body
 
 ---
@@ -29,8 +29,9 @@ it never happens *quietly*.
 
 ## What it does
 
-- **Five triggers** — lid, resume from suspend, failed unlock attempts, USB
-  device insertion, and a manual trigger for testing.
+- **Seven triggers** — lid, resume from suspend, failed unlock attempts, USB
+  device insertion, a wake from idle, power-on, and a manual trigger for
+  testing.
 - **Photo first, questions later.** The camera fires within ~3 seconds of the
   trigger, before any waiting, so evidence exists even if the machine is shut
   or carried off immediately. The camera LED lights while it does — that is

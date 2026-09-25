@@ -41,7 +41,7 @@ trigger ──► debounce ──► capture ──► lock state ──► grac
  manual
 ```
 
-1. **Trigger.** One of six sources fires (see below).
+1. **Trigger.** One of seven sources fires (see below).
 2. **Debounce.** Triggers within `DEBOUNCE_SECONDS` coalesce into one incident.
    Opening the lid after a suspend genuinely fires both the lid watcher and the
    resume unit, so this is required, not an optimisation.
@@ -74,10 +74,16 @@ trigger ──► debounce ──► capture ──► lock state ──► grac
 | `resume` | oneshot unit ordered `After=suspend.target` and friends |
 | `faillock` | journal watcher matching failed unlocks at the lock screen |
 | `usb` | udev rule on `ACTION=="add", SUBSYSTEM=="usb"` |
-| `wake` | journal watcher for Omarchy's idle service spawning its wake process |
+| `wake` | journal watcher for Omarchy's idle monitor going idle and then active again |
+| `boot` | oneshot unit at power-on, with a grace period for a session to appear |
 | `manual` | `omarchy-emw-trigger manual`, for testing |
 
 Enable the subset you want with `TRIGGERS` in the config.
+
+`boot` covers power-on: it photographs immediately, then waits for a graphical
+session to appear and become usable. With display-manager autologin a normal
+boot resolves `benign` within seconds, so what it really catches is a boot
+where no graphical session ever appears.
 
 `wake` covers a case the others miss: a laptop left **open and locked** never
 suspends on idle under Omarchy — it blanks and locks and stays awake — so
@@ -143,11 +149,14 @@ The settings most worth knowing:
 | Key | Default | Notes |
 |---|---|---|
 | `ENABLED` | `true` | Master switch |
-| `TRIGGERS` | `lid,resume,faillock,usb` | Which sources are live |
+| `TRIGGERS` | `lid,resume,faillock,usb,wake,boot` | Which sources are live |
 | `GRACE_SECONDS` | `20` | How long a trusted unlock has to arrive |
 | `ALERT_WHEN_UNLOCKED` | `false` | Alert when the machine was not locked |
 | `AUTH_FAILURE_THRESHOLD` | `3` | Failed unlocks that make an incident |
 | `AUTH_FAILURE_WINDOW` | `120` | …within this many seconds |
+| `WAKE_MIN_IDLE_SECONDS` | `30` | Idle required before a wake counts |
+| `BOOT_GRACE_SECONDS` | `60` | Ignore USB coldplug this long after boot |
+| `BOOT_LOGIN_GRACE_SECONDS` | `120` | How long `boot` waits for a session |
 | `ALERT_CHANNEL` | `none` | `none`, `telegram`, `ntfy`, `both` |
 | `PASSIVE_MODE` | `false` | Log only: no alerts, no hooks |
 | `NOTIFY_ON_BENIGN` | `false` | Toast even when it turned out to be you |
