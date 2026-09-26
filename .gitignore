@@ -1,4 +1,10 @@
 __pycache__/
 *.pyc
+
+# Evidence photos must never be committed by accident. The negations below are
+# the one exception: documentation screenshots live in docs/media/, and without
+# them git would ignore every image you tried to add to the README.
 *.jpg
 *.png
+!docs/media/*.png
+!docs/media/*.jpg

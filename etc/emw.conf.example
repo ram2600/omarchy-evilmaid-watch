@@ -18,7 +18,8 @@ CONFIG_VERSION=1
 ENABLED=true
 
 # The desktop user to notify and whose lock state decides the verdict.
-# Set automatically by install.sh; change it if you install for someone else.
+# install.sh resolves this and writes it in for you; change it only if you are
+# installing on behalf of someone else.
 EMW_USER=
 
 # Which triggers are live. Comma-separated subset of:
@@ -77,8 +78,11 @@ BOOT_GRACE_SECONDS=60
 #
 # What a power-on proves depends on your login setup. With a password prompt at
 # the display manager, a stranger never reaches a session and this settles
-# unattended with a photograph. With autologin they land straight in a session,
-# so it settles benign within seconds and proves very little.
+# `unattended` with a photograph. With autologin they land straight in a
+# session, so it settles `benign` within seconds and proves very little.
+#
+# Note the trade if you do require a password: boot and walk away for longer
+# than this and your own boot alerts. Raise it, or expect that occasionally.
 BOOT_LOGIN_GRACE_SECONDS=120
 
 # --- Capture --------------------------------------------------------------

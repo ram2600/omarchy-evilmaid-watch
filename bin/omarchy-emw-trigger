@@ -212,11 +212,16 @@ no-session)
     # graphical session appear, and does it become usable? So unlike every
     # other source, `boot` does not settle on `unattended` immediately.
     #
-    # What this proves depends on the machine's login setup. With a password
-    # prompt at the display manager, a stranger who powers the machine on never
-    # reaches a session and this settles `unattended` with a photograph. With
-    # autologin they land straight in an unlocked session and it settles
-    # `benign` within seconds, proving very little.
+    # What this proves depends on the machine's login setup, so be honest about
+    # both cases. With a password prompt at the display manager, a stranger who
+    # powers the machine on never reaches a session at all, and this settles
+    # `unattended` with a photograph of them - the trigger working as intended.
+    # With autologin, they land straight in an unlocked session and it settles
+    # `benign` within seconds, so the trigger proves very little and the wake
+    # and faillock watchers are what cover that machine instead.
+    #
+    # Either way, an encrypted root means whoever boots it already had the
+    # passphrase, so this is about what happens after that gate, not the gate.
     boot_login_grace=$(conf_get BOOT_LOGIN_GRACE_SECONDS 120)
     [[ $boot_login_grace =~ ^[0-9]+$ ]] || boot_login_grace=120
     log_journal "boot: waiting up to ${boot_login_grace}s for a session"

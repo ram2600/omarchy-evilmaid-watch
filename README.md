@@ -1,112 +1,211 @@
 # Omarchy EvilMaid Watch (EMW)
 
-Physical-access detection for an Omarchy/Arch laptop. When someone opens the
-lid, wakes the machine, plugs in a USB device, or fails at your lock screen,
-EMW photographs whoever is in front of the camera, records an incident, and
-tells you about it — on the machine and on your phone.
+**Physical-access detection for an Omarchy/Arch laptop.** When someone opens the
+lid, wakes the machine, plugs in a USB device, switches it on, or fails at your
+lock screen, EMW photographs whoever is in front of the camera, records an
+incident, and tells you — on the machine and on your phone.
 
 Physical access — the "evil maid" attack — is one of the hardest threats to
-defend against, and the realistic goal is not prevention but **detection with
-evidence**: knowing it happened, when, and having a photo.
+defend against. The realistic goal is not prevention but **detection with
+evidence**: knowing it happened, when, and having a photograph.
 
 Built and tested on an Apple Silicon MacBook Air running Asahi/Omarchy.
+
+---
+
+## Demo
+
+<!-- Replace with the release-hosted mp4 URL once uploaded -->
+https://github.com/ram2600/omarchy-evilmaid-watch/releases/download/v0.1.0/demo.mp4
+
+| | |
+|---|---|
+| ![Intruder toast with photo](docs/media/toast-intruder.png) | ![Telegram alert](docs/media/telegram-alert.png) |
+| The toast: verdict, trigger, and the capture | The same incident on your phone, minutes later or days later if the laptop was offline |
+
+![Incident detail](docs/media/omarchy-emw-show.png)
+
+---
 
 ## Threat model
 
 **What it detects.** Someone physically interacting with your laptop while you
-are not at it: opening the lid, waking it, guessing at the lock screen, or
-attaching a USB device.
+are not at it: opening the lid, waking it, switching it on, guessing at the lock
+screen, or attaching a USB device.
 
 **What it does not do.**
 
 - It does not stop an attacker. It records one.
-- It does not defend against an attacker who already has root. Root can stop
-  the units and remove the evidence, `chattr -a` included.
-- It does not protect against an attacker who takes the machine away. Evidence
-  lives locally; the remote alert is what survives that, so configure one.
+- It is no defence against an attacker who already has root. Root can stop the
+  units and remove the evidence, `chattr -a` included.
+- It does not protect against someone taking the machine away. Evidence lives
+  locally; the remote alert is what survives that, so configure one.
 - It is not anti-theft or device tracking.
+- It cannot prove *who* was there — only that someone was, and what the camera
+  saw.
 
 The camera LED lights during capture. That is hardware-wired on Apple silicon
-and cannot be suppressed — and it is wanted: a visible deterrent, and a sign to
-you that the shutter fired.
+and cannot be suppressed — and it is wanted: a visible deterrent, and your own
+confirmation that the shutter fired.
+
+---
 
 ## How an incident works
 
 ```
 trigger ──► debounce ──► capture ──► lock state ──► grace ──► verdict ──► outputs
  lid                     photo       locked?       wait for            events.log
- resume                  (~3s)                     trusted             toast
+ resume                  (~3s)                     a trusted           toast
  faillock                                          unlock              telegram/ntfy
  usb                                                                   root hooks
+ wake
+ boot
  manual
 ```
 
-1. **Trigger.** One of seven sources fires (see below).
-2. **Debounce.** Triggers within `DEBOUNCE_SECONDS` coalesce into one incident.
+1. **Trigger.** One of seven sources fires.
+2. **Debounce.** Triggers within `DEBOUNCE_SECONDS` collapse into one incident.
    Opening the lid after a suspend genuinely fires both the lid watcher and the
-   resume unit, so this is required, not an optimisation.
-3. **Capture.** A still is taken immediately — before any waiting — so evidence
+   resume unit, so this is required for correctness, not tidiness.
+3. **Capture.** A still is taken immediately, *before* any waiting, so evidence
    exists even if the machine is shut or carried off seconds later.
 4. **Lock state and grace.** If the session was locked, EMW waits
-   `GRACE_SECONDS` for a *trusted unlock*. You unlocking in time means the
-   incident was you. This stands in for a biometric unlock, which Asahi has no
-   working fingerprint reader for; if one ever lands, it slots in here as an
-   additional trusted-unlock signal rather than replacing this one. The
-   grace window is measured from the **trigger**, not from when the lid was
-   closed — time spent away with the lid shut does not count.
-5. **Verdict.** One of:
+   `GRACE_SECONDS` for a **trusted unlock**. Someone who can unlock in time is
+   you. This stands in for a biometric check, which Asahi has no working
+   fingerprint reader for.
+5. **Verdict.**
 
-   | Verdict | Meaning |
-   |---|---|
-   | `intruder` | Locked, and nobody unlocked it within the grace window |
-   | `benign` | Locked, and you unlocked it in time |
-   | `attended` | Not locked, and `ALERT_WHEN_UNLOCKED=false` — you were using it |
-   | `unattended` | Lock state could not be determined |
+   | Verdict | Meaning | Alerts? |
+   |---|---|---|
+   | `intruder` | Locked, and nobody unlocked it in the grace window | Yes |
+   | `unattended` | No session at all — a boot with nobody logged in | Yes |
+   | `benign` | Locked, and you unlocked it in time | No |
+   | `attended` | Not locked, so you were using it | Only if `ALERT_WHEN_UNLOCKED=true` |
 
-6. **Outputs.** Always the local record; on `intruder`, also a desktop toast, a
-   remote alert, and any root hooks you have installed.
+6. **Outputs.** Always the local record. On an alerting verdict: a desktop
+   toast, a remote alert, and any root hooks you have installed.
+
+The grace window is measured from the **trigger**, not from when the lid closed
+— time spent away with the lid shut does not count.
+
+---
 
 ## Triggers
 
-| Source | Mechanism |
-|---|---|
-| `lid` | `lidwatch.py` reads the lid switch from `/dev/input` |
-| `resume` | oneshot unit ordered `After=suspend.target` and friends |
-| `faillock` | journal watcher matching failed unlocks at the lock screen |
-| `usb` | udev rule on `ACTION=="add", SUBSYSTEM=="usb"` |
-| `wake` | journal watcher for Omarchy's idle monitor going idle and then active again |
-| `boot` | oneshot unit at power-on, with a grace period for a session to appear |
-| `manual` | `omarchy-emw-trigger manual`, for testing |
+| Source | Mechanism | Catches |
+|---|---|---|
+| `lid` | Reads the lid switch from `/dev/input` | The laptop being opened |
+| `resume` | Oneshot unit ordered after `suspend.target` | Waking from suspend or hibernate |
+| `faillock` | Journal watcher on the lock screen's PAM service | Someone guessing your password |
+| `usb` | udev rule on `ACTION=="add", SUBSYSTEM=="usb"` | A device being attached |
+| `wake` | Journal watcher on Omarchy's idle monitor going idle then active | An open, locked laptop being nudged awake |
+| `boot` | Oneshot unit at power-on, with a grace for a session to appear | The machine being switched on |
+| `manual` | `omarchy-emw-trigger manual` | Testing |
 
-Enable the subset you want with `TRIGGERS` in the config.
+Enable the subset you want with `TRIGGERS`.
 
-`boot` covers power-on: it photographs immediately, then waits for a graphical
-session to appear and become usable. With display-manager autologin a normal
-boot resolves `benign` within seconds, so what it really catches is a boot
-where no graphical session ever appears.
+Two of these exist because of gaps found in testing, and are worth
+understanding:
 
-`wake` covers a case the others miss: a laptop left **open and locked** never
-suspends on idle under Omarchy — it blanks and locks and stays awake — so
-someone nudging it produces no lid event, no resume, and no failed unlock
-unless they guess three times. Nothing fired at all, which is the quietest
-possible version of the event this tool exists to catch. Omarchy's idle service
-logs a wake only when the machine genuinely idled first, so this cannot fire on
-an idle cycle that never started, and waking your own *unlocked* machine is
-`attended` and silent.
+**`wake`** — a laptop left open and locked never suspends on idle under Omarchy:
+it blanks, locks, and stays awake. Someone who nudges the trackpad, reads the
+lock screen and walks away produces no lid event, no resume, and no failed
+unlock. Nothing fired at all, which is the quietest possible version of the
+event this tool exists to catch.
+
+**`boot`** — what a power-on proves depends on how your machine logs in:
+
+| Login setup | A stranger powers it on | You power it on |
+|---|---|---|
+| Password at the display manager | No session ever appears → `unattended`, alert with photo | You log in → `benign` |
+| Autologin | They land straight in a session → `benign` within seconds, so `boot` proves little | `benign` |
+
+With an encrypted root, whoever boots the machine needed the passphrase already,
+so `boot` is about what happens *after* that gate rather than the gate itself. If
+you run autologin, this trigger is weak for you and `wake` plus `faillock` are
+what actually cover you — worth knowing before you rely on it.
+
+Note the trade in the first row: `BOOT_LOGIN_GRACE_SECONDS` is how long it waits
+for a session, so if you boot the machine and walk away for longer than that,
+your own boot alerts. Raise it, or expect the occasional alert from yourself.
+
+---
+
+## Requirements
+
+An Arch-based system with systemd, a V4L2 webcam, and Omarchy's
+`omarchy-lock-password` PAM service. Lock state and toasts assume Hyprland with
+Quickshell (`omarchy-shell`).
+
+Nothing needs a Python package — the lid watcher uses only the standard library
+and reads `/dev/input` directly.
+
+| Needed for | Binary | Arch package | Required? |
+|---|---|---|---|
+| Webcam capture | `ffmpeg` | `ffmpeg` | Yes |
+| Camera detection | `v4l2-ctl` | `v4l-utils` | Yes |
+| Incident metadata | `jq` | `jq` | Yes |
+| Lid watcher | `python3` | `python` | Yes |
+| Remote alerts | `curl` | `curl` | For Telegram/ntfy |
+| Privilege drop, locking, log injection | `setpriv`, `runuser`, `flock`, `logger` | `util-linux` | Yes (base) |
+| Append-only event log | `chattr` | `e2fsprogs` | Degrades gracefully |
+| Units, session and bus access | `systemctl`, `loginctl`, `busctl`, `udevadm` | `systemd` | Yes |
+| Viewing an incident photo | `imv` | `imv` | Optional |
+| Lock state and toasts | `omarchy-shell` | Omarchy | Yes |
+
+---
 
 ## Install
 
 ```bash
-git clone https://github.com/<you>/omarchy-evilmaid-watch
+git clone https://github.com/ram2600/omarchy-evilmaid-watch
 cd omarchy-evilmaid-watch
-sudo ./install.sh          # idempotent: safe to re-run after an edit
+sudo ./install.sh          # idempotent: safe to re-run after any change
 sudo omarchy-emw-setup     # configure Telegram or ntfy alerts
 ```
 
-`install.sh` deploys to `/usr/local` rather than into the Omarchy checkout, so
-`omarchy update` cannot clobber it. It **preserves an existing
-`/etc/omarchy/emw.conf`**, so re-running never overwrites your tokens — a
-changed default in the template will not reach a config you already have.
+`install.sh` deploys to `/usr/local` and `/etc/omarchy`, never into the Omarchy
+checkout, so `omarchy update` cannot clobber it.
+
+**It never overwrites an existing `/etc/omarchy/emw.conf`** — that file holds
+your API tokens. The cost of that is reported rather than hidden: on every
+install it lists settings this version knows that your config does not mention,
+and the defaults they are running on, plus any trigger your `TRIGGERS` list does
+not name:
+
+```
+  keeping existing /etc/omarchy/emw.conf
+  settings in this version that your config does not mention:
+    WAKE_MIN_IDLE_SECONDS (default: 30)
+  triggers this version has that your TRIGGERS does not list: boot
+  they are installed but NOT armed; to enable them:
+    sudo omarchy-emw-setup set TRIGGERS lid,resume,faillock,usb,wake,boot
+```
+
+### Verify it is live
+
+```bash
+systemctl is-active omarchy-emw.service omarchy-emw-faillock.service omarchy-emw-wake.service
+systemctl is-enabled omarchy-emw-boot.service
+sudo omarchy-emw-trigger manual        # a real incident, on demand
+sudo omarchy-emw-show                  # look at what it recorded
+```
+
+### Upgrading
+
+`git pull && sudo ./install.sh`. Settings are **never migrated**: when a change
+cannot be expressed as a new key with a safe default, `CONFIG_VERSION` is bumped
+and the installer refuses rather than reinterpreting what you wrote, because a
+security tool that silently inherits settings across a breaking change leaves
+the machine armed differently than you believe it is. The supported path is:
+
+```bash
+sudo cp /etc/omarchy/emw.conf /etc/omarchy/emw.conf.bak
+sudo ./uninstall.sh --purge-config
+sudo ./install.sh && sudo omarchy-emw-setup
+```
+
+---
 
 ## Commands
 
@@ -116,110 +215,167 @@ changed default in the template will not reach a config you already have.
 | `sudo omarchy-emw-setup set KEY VALUE` | Change one tunable without editing the file |
 | `sudo omarchy-emw-show` | Show the latest incident and open its photo |
 | `sudo omarchy-emw-trigger manual` | Raise a real incident on demand |
-| `sudo omarchy-emw-faillock --simulate --live --delay 15` | Test the failed-unlock path without wrong passwords (lock the screen during the delay) |
-| `sudo omarchy-emw-faillock --probe 120` | Print what the watcher would match, firing nothing |
-| `sudo omarchy-emw-spool` | Retry queued alerts now |
+| `sudo omarchy-emw-faillock --simulate` | Test the failed-unlock path without typing wrong passwords |
+| `sudo omarchy-emw-wakewatch --simulate --live --delay 20` | Test the wake path end to end |
 | `sudo omarchy-emw-prune --dry-run` | Show which evidence has expired, deleting nothing |
+| `sudo omarchy-emw-spool` | Retry queued alerts now |
 | `journalctl -u omarchy-emw -f` | Watch it live |
+
+---
 
 ## Configuration
 
-`/etc/omarchy/emw.conf`, mode 0600 root:root because it holds API tokens.
-Parsed, never sourced: a value like `x; rm -rf /` is just an odd string.
-Quote values with spaces, no trailing comments on a value line.
+`/etc/omarchy/emw.conf`, mode `0600 root:root` because it holds API tokens. It
+is **parsed, never sourced**: a value like `x; rm -rf /` is just an odd string,
+because a config that can become a root shell by being edited is worse than no
+config. Quote values containing spaces; no trailing comments on a value line.
 
-**Settings are never migrated forward.** `install.sh` preserves an existing
-config — it holds your tokens — and reports any key this version knows that
-your config does not, along with the default it is running on. When a change
-cannot be expressed as a new key with a safe default, `CONFIG_VERSION` is
-bumped and the installer *refuses* rather than reinterpreting what you wrote:
+Every option, what it does, and why it defaults that way:
 
-```bash
-sudo cp /etc/omarchy/emw.conf /etc/omarchy/emw.conf.bak
-sudo ./uninstall.sh --purge-config
-sudo ./install.sh && sudo omarchy-emw-setup
-```
+### Master switches
 
-A security tool inheriting settings across a breaking change is how a machine
-ends up armed differently than its owner believes. `--force-keep-config`
-overrides the refusal when you need the machine working now.
+| Key | Default | What it does | Why |
+|---|---|---|---|
+| `CONFIG_VERSION` | `1` | The shape of this file, not the software version | Bumped only when a change cannot be expressed as a new key with a safe default; the installer then refuses rather than reinterpreting your settings |
+| `ENABLED` | `true` | Master switch — `false` stops reacting to every trigger | One place to disarm without uninstalling |
+| `EMW_USER` | *(set at install)* | The desktop user to notify, and whose lock state decides the verdict | A system service cannot guess this; resolving it at install means the daemon never has to |
+| `TRIGGERS` | `lid,resume,faillock,usb,wake,boot` | Which sources are live | Lets you drop the noisy ones (`usb` is the loudest) without uninstalling |
+| `PASSIVE_MODE` | `false` | Record incidents but send nothing and run no hooks | For deciding whether you trust it before letting it alert or run root hooks |
 
-The settings most worth knowing:
+### Trusted unlock
 
-| Key | Default | Notes |
-|---|---|---|
-| `ENABLED` | `true` | Master switch |
-| `TRIGGERS` | `lid,resume,faillock,usb,wake,boot` | Which sources are live |
-| `GRACE_SECONDS` | `20` | How long a trusted unlock has to arrive |
-| `ALERT_WHEN_UNLOCKED` | `false` | Alert when the machine was not locked |
-| `AUTH_FAILURE_THRESHOLD` | `3` | Failed unlocks that make an incident |
-| `AUTH_FAILURE_WINDOW` | `120` | …within this many seconds |
-| `WAKE_MIN_IDLE_SECONDS` | `30` | Idle required before a wake counts |
-| `BOOT_GRACE_SECONDS` | `60` | Ignore USB coldplug this long after boot |
-| `BOOT_LOGIN_GRACE_SECONDS` | `120` | How long `boot` waits for a session |
-| `ALERT_CHANNEL` | `none` | `none`, `telegram`, `ntfy`, `both` |
-| `PASSIVE_MODE` | `false` | Log only: no alerts, no hooks |
-| `NOTIFY_ON_BENIGN` | `false` | Toast even when it turned out to be you |
-| `RETAIN_DAYS` | `7` | Evidence retention: intruder, unattended, undecided |
-| `BENIGN_RETAIN_DAYS` | `2` | Evidence retention once it turned out to be you |
-| `DEBOUNCE_SECONDS` | `20` | Coalesce window |
+| Key | Default | What it does | Why |
+|---|---|---|---|
+| `TRUSTED_UNLOCK` | `true` | Whether unlocking in time clears an incident | The whole mechanism that separates you from an intruder; off means every locked trigger is an intruder |
+| `GRACE_SECONDS` | `20` | How long a trusted unlock has to arrive | Long enough to fumble a password, short enough that a real intruder alert is not delayed a minute. Measured from the trigger, not from the lid closing |
+| `ALERT_WHEN_UNLOCKED` | `false` | Alert when the session was *not* locked | A grace period cannot tell you from an intruder on an unlocked machine, and the default assumes an unlocked laptop was one you were sitting at |
 
-`NOTIFY_ON_BENIGN` is off deliberately: a toast for every lid open you make
-yourself trains you to dismiss them, and then the one that matters is the one
-you swipe away out of habit.
+### Failed unlock
+
+| Key | Default | What it does | Why |
+|---|---|---|---|
+| `AUTH_FAILURE_THRESHOLD` | `3` | Failed unlocks that make an incident | One miss is a typo. Well below `pam_faillock`'s own `deny=10`, so EMW fires long before the system locks you out |
+| `AUTH_FAILURE_WINDOW` | `120` | …within this many seconds | Isolated typos across an afternoon must never accumulate into a false intrusion |
+
+### Wake
+
+| Key | Default | What it does | Why |
+|---|---|---|---|
+| `WAKE_MIN_IDLE_SECONDS` | `30` | Idle time required before a wake counts | Below this it is the compositor flapping, not a person — idle/active pairs 140 ms apart have been observed |
+
+### Boot
+
+| Key | Default | What it does | Why |
+|---|---|---|---|
+| `BOOT_GRACE_SECONDS` | `60` | Ignore USB triggers this soon after boot | udev replays every attached device at boot, before any session exists, which otherwise raised an `unattended` incident and alerted on every power-on with nothing plugged in. `0` disables |
+| `BOOT_LOGIN_GRACE_SECONDS` | `120` | How long `boot` waits for a graphical session to appear and become usable | Separate from `GRACE_SECONDS` because it has to cover the display manager and compositor starting; 20s would call a slow but normal boot `unattended` |
+
+### Capture
+
+| Key | Default | What it does | Why |
+|---|---|---|---|
+| `CAPTURE_PHOTO` | `true` | Whether to photograph at all | The evidence is the point, but the incident record still works without it |
+| `CAMERA_DEVICE` | `auto` | Which V4L2 device to use | Never hardcode `/dev/video0`: on Apple silicon that is a video decoder, not a camera, and capturing from it produces nothing. `auto` picks the first real capture device |
+| `PHOTO_RESOLUTION` | `1280x720` | Capture resolution | Big enough to identify a face, small enough to send over a phone connection |
+| `PHOTO_WARMUP_FRAMES` | `15` | Frames discarded before keeping one | The first frames are black until auto-exposure settles |
+
+### Alerting
+
+| Key | Default | What it does | Why |
+|---|---|---|---|
+| `ALERT_CHANNEL` | `none` | `none`, `telegram`, `ntfy`, or `both` | Off until you choose, so installing it never sends anything anywhere unexpectedly |
+| `TELEGRAM_BOT_TOKEN` | *(empty)* | Bot token | Set by `omarchy-emw-setup`, never passed in argv where the process table would expose it |
+| `TELEGRAM_CHAT_ID` | *(empty)* | Chat to message | Resolved for you during setup |
+| `NTFY_URL` | `https://ntfy.sh` | ntfy server | Override to self-host |
+| `NTFY_TOPIC` | *(empty)* | ntfy topic | Anyone who knows the topic can read your alerts, so choose an unguessable one |
+| `NTFY_TOKEN` | *(empty)* | ntfy auth token | Optional, for a protected topic |
+| `SPOOL_MAX_AGE_HOURS` | `72` | How long an undeliverable alert stays worth sending | A three-day-old "someone opened your laptop" is noise, and this bounds a spool that can never drain |
+
+### Notification
+
+| Key | Default | What it does | Why |
+|---|---|---|---|
+| `DESKTOP_NOTIFY` | `true` | Show a toast on the local session | Immediate feedback when you are there |
+| `NOTIFY_ON_BENIGN` | `false` | Toast even when the verdict was you | A toast for every lid open you make yourself trains you to dismiss them, and then the one that matters is the one you swipe away out of habit |
+
+### Storage and retention
+
+| Key | Default | What it does | Why |
+|---|---|---|---|
+| `EVIDENCE_DIR` | `/var/lib/omarchy-emw` | Where incidents and the event log live | `0700 root:root`; nothing but root can read the photographs |
+| `RETAIN_DAYS` | `7` | Retention for `intruder`, `unattended`, and undecided incidents | Long enough to notice and act; an incident with no verdict was cut short by a power loss, so it gets the long clock too |
+| `BENIGN_RETAIN_DAYS` | `2` | Retention once it turned out to be you | Capture happens before the verdict, so routine use accumulates photographs of *you*. Short clock, and it accepts one trade: if someone knew your password and unlocked in time, that photo expires early |
+| `DEBOUNCE_SECONDS` | `20` | Window in which triggers collapse into one incident | A lid open after suspend fires two sources within milliseconds; without this it was two incidents and two alerts |
+
+### Hooks
+
+| Key | Default | What it does | Why |
+|---|---|---|---|
+| `HOOK_DIR` | `/etc/omarchy/emw-hooks.d` | Executables run as root on an alerting verdict | Wipe keys, drop the network, page yourself — whatever your threat model needs |
+| `HOOK_TIMEOUT` | `30` | Seconds a hook may take | A hung hook must not hold an incident open |
+
+Hooks must be root-owned and not group- or world-writable, or they are skipped:
+this directory runs code as root, so a user-writable hook would be a
+straight privilege escalation from the desktop session.
+
+---
 
 ## Evidence
 
 ```
 /var/lib/omarchy-emw/            0700 root:root
-├── events.log                   append-only (chattr +a) one-line-per-event log
+├── events.log                   append-only (chattr +a), one line per event
 ├── incidents/<timestamp>-<pid>/
 │   ├── photo.jpg                the capture
-│   ├── sources                  triggers coalesced into this incident
-│   ├── locked-at-trigger        lock state when it fired
-│   ├── lock-status.json         raw lock probe output
+│   ├── sources                  every trigger that collapsed into this incident
+│   ├── locked-at-trigger        lock state at the moment it fired
+│   ├── lock-status.json         the lock screen's own view, for diagnosing a wrong verdict
+│   ├── boot-wait                boot incidents only: whether a session ever appeared
 │   ├── capture.log              camera diagnostics
 │   └── verdict.json             incident, verdict, sources, photo, closed
 └── spool/                       alerts awaiting delivery
 ```
 
-`events.log` is `chattr +a` where the filesystem supports it. That stops
-non-root tampering; it does **not** stop a root attacker, who can simply
-`chattr -a`.
+`events.log` is `chattr +a` where the filesystem supports it. An append still
+succeeds, a rewrite does not — so it is tamper-evidence against a non-root
+attacker. It does **not** stop root, who can clear the attribute. Real
+integrity comes from getting the alert off the box.
 
-### Retention
+Pruning runs from `omarchy-emw-spool.timer`, on a clock rather than only when a
+new incident arrives, so the last photo of you does not sit there until
+something else happens. Only evidence directories expire; `events.log` keeps the
+record of every incident permanently.
 
-The photo is taken *before* the grace period can tell you from an intruder, so
-a `benign` incident still holds a picture of you. Those expire on a short clock
-(`BENIGN_RETAIN_DAYS`, default 2 days) while real evidence keeps the long one
-(`RETAIN_DAYS`, default 7). An incident with no verdict — still running, or cut
-short by a power loss — gets the long clock, because deleting evidence over a
-crash is the wrong bias. Either setting at `0` keeps that class forever.
-
-This trades away one case worth naming: if someone knew or coerced your
-password and unlocked inside the grace window, the verdict is `benign` and that
-photo expires early.
-
-Pruning runs from `omarchy-emw-spool.timer` — on a clock rather than only when
-a new incident arrives, so the last photo of you does not sit there until
-something else happens. Only the evidence directory is removed; `events.log`
-keeps the record of every incident permanently.
+---
 
 ## Remote alerts
 
-Telegram or ntfy, configured with `omarchy-emw-setup`. If a send fails — which
-is exactly what happens when the lid is shut somewhere unfamiliar with no
-network — the alert is **spooled** and retried every 120s for up to
-`SPOOL_MAX_AGE_HOURS`. The credential is read at send time and never written
-into the spool file.
+Telegram or ntfy, configured by `omarchy-emw-setup`. An evil-maid event is most
+likely exactly when the machine has no network — lid shut, somewhere unfamiliar
+— so a failed send is **spooled and retried** every two minutes until
+`SPOOL_MAX_AGE_HOURS` expires, including across reboots.
 
-## Hooks
+The bot token is read from the config at send time and never written into the
+spool, so the queue never becomes a second place a credential lives. The journal
+records whether each alert actually carried its photograph.
 
-Every executable in `/etc/omarchy/emw-hooks.d` runs as root on an `intruder`
-verdict, with `EMW_INCIDENT_DIR`, `EMW_SOURCE` and `EMW_VERDICT` in the
-environment. Hooks must be root-owned and not group/world-writable or they are
-skipped — this directory runs code as root, so a user-writable hook would be a
-straight privilege escalation.
+---
+
+## Testing
+
+See [docs/testing.md](docs/testing.md). Read it before testing the failed-unlock
+path in particular:
+
+> **Do not test the lock screen by typing wrong passwords.** Arch's
+> `pam_faillock` locks the account after 10 failures, attempts made *during* a
+> lockout still count, and the timer runs from the most recent attempt — so
+> retrying keeps you locked out. Use `sudo omarchy-emw-faillock --simulate`,
+> which exercises the whole path without a single wrong password.
+
+Every trigger has a simulation or probe mode, and the simulations drive the same
+code the daemons run rather than a copy of it.
+
+---
 
 ## Uninstall
 
@@ -230,39 +386,75 @@ sudo ./uninstall.sh --purge-evidence   # also remove /var/lib/omarchy-emw
 sudo ./uninstall.sh --purge            # both
 ```
 
-Config and evidence are kept unless asked for: removing the software should
-never be the thing that destroys the photographs it took. Units are stopped
-before they are disabled, so nothing keeps watching the lid until reboot.
+Config and evidence are kept unless you ask: removing the software should never
+be the thing that destroys the photographs it took. Units are stopped before
+they are disabled, so nothing keeps watching the lid until reboot.
 
-## Testing
-
-See [docs/testing.md](docs/testing.md). Short version: use
-`sudo omarchy-emw-faillock --simulate` rather than typing wrong passwords at
-your lock screen. `pam_faillock` locks the account after 10 failures, and
-retrying *during* the lockout restarts its 120-second timer — testing the
-obvious way can lock you out of your own machine.
+---
 
 ## Why this is not an Omarchy plugin
 
-Omarchy plugins are QML that runs inside the long-lived `omarchy-shell`
-process. Per Omarchy's own manual, `omarchy plugin add` "never runs anything
-from the plugin, never executes an install hook, and never asks for sudo."
+Omarchy plugins are QML that runs inside the long-lived `omarchy-shell` process,
+and `omarchy plugin add` "never runs anything from the plugin, never executes an
+install hook, and never asks for sudo."
 
 EMW is root systemd units, a udev rule, `/dev/input` access, a journal watcher
-and root-owned append-only evidence. The plugin mechanism cannot install any of
-that, and should not be able to. EMW therefore installs as an ordinary system
-service. A bar indicator *would* be a legitimate plugin, and is a possible
-companion later — see [docs/architecture.md](docs/architecture.md).
+and root-owned append-only evidence. The plugin mechanism cannot install that,
+and a mechanism that could would be a privilege-escalation vector by design. So
+EMW installs as an ordinary system service. A bar indicator *would* be a
+legitimate plugin, and is on the roadmap as a companion.
 
-## Requirements
+---
 
-Arch-based system with systemd and Omarchy's `omarchy-lock-password` PAM
-service. A V4L2 webcam. Binaries used: `ffmpeg` (capture), `v4l2-ctl` from
-`v4l-utils` (device probing), `jq`, `python3`, `curl`, and `logger`. Written
-against Hyprland + Quickshell (`omarchy-shell`) for lock state and toasts.
+## Roadmap
+
+**Desktop UI**
+
+- [ ] Arm/disarm toggle in the UI — the trigger already honours a per-user
+      toggle file, so this needs no root; the natural first plugin companion
+- [ ] Evidence browser — search and view incidents by date, trigger and verdict
+- [ ] Evidence clean-up from the UI, with the retention clocks visible so it is
+      clear what would expire anyway
+
+**Known gaps**
+
+- [ ] `omarchy emw ...` subcommand routing (Omarchy's dispatcher only scans its
+      own directory, so the binaries are called directly today)
+- [ ] Omarchy menu integration
+- [ ] Biometric as an additional trusted-unlock signal, if Asahi gets a working
+      fingerprint reader — the grace loop is already shaped for it
+- [ ] Verification on non-Asahi hardware, and with and without display-manager autologin
+- [ ] An AUR package, so upgrading is not `git pull && sudo ./install.sh`
+- [ ] Evidence encrypted at rest, or shipped off-box immediately and kept nowhere
+
+---
+
+## Feedback and ideas
+
+This has run on exactly one laptop, so the most valuable thing you can tell me
+is where it fails on yours. Particularly welcome:
+
+- **It fired when it shouldn't**, or **stayed silent when it should have fired** —
+  with the relevant `journalctl -u omarchy-emw -u omarchy-emw-wake` lines
+- Behaviour on other hardware, other lock screens, and with or without autologin
+- Holes in the threat model, especially anything that defeats it *quietly*
+- Triggers I have not thought of
+
+Open an issue, or use private vulnerability reporting for anything that should
+not be public yet.
+
+---
 
 ## Status
 
-Pre-release. Working and in daily use on one machine; the trigger paths,
-alerting, spool retry and evidence store are all exercised by real and
-simulated incidents. Interfaces may still change.
+Pre-release. In daily use on one machine, with every trigger path, the alerting,
+the offline spool and the retention clocks exercised by real and simulated
+incidents. Interfaces may still change.
+
+## Licence
+
+[Apache-2.0](LICENSE). Copyright (c) 2026 ram.
+
+The [`NOTICE`](NOTICE) file carries the attribution that Apache-2.0 §4(d)
+requires to travel with any derivative work — if you fork this or build on it,
+keep it.

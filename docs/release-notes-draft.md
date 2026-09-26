@@ -6,9 +6,8 @@ that would be pasted into the release.
 
 ## Before publishing
 
-- [ ] Add a `LICENSE` (the repo has none)
+- [x] Licence chosen: Apache-2.0 with a `NOTICE` file
 - [ ] Decide the tag: `v0.1.0` assumed below
-- [ ] Replace `<you>` in the README clone URL
 - [ ] Confirm behaviour on a non-Asahi laptop, or scope the claims to Asahi
 - [x] USB default settled: on, with `BOOT_GRACE_SECONDS` suppressing the
       coldplug burst at boot that was its only real noise source
@@ -52,7 +51,7 @@ it never happens *quietly*.
 ## Install
 
 ```bash
-git clone https://github.com/<you>/omarchy-evilmaid-watch
+git clone https://github.com/ram2600/omarchy-evilmaid-watch
 cd omarchy-evilmaid-watch
 sudo ./install.sh
 sudo omarchy-emw-setup
