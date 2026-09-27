@@ -74,6 +74,30 @@ account after 10 failures, and attempts during a lockout restart its timer, so
 testing this the obvious way can lock you out of your own machine. See
 [docs/testing.md](docs/testing.md).
 
+## What has actually been tested
+
+Every trigger has fired and recorded evidence on real hardware. Where a verdict
+was reached by simulation rather than by a real intruder, this says so — the
+mechanism is identical, only the provocation was synthetic.
+
+| Trigger | Observed | Verdict reached | Photo |
+|---|---|---|---|
+| `lid` | Real lid open, locked screen | `benign` and `intruder` both, for real | Yes |
+| `resume` | Real wake from suspend | Corroborated a lid incident via the debounce | Yes |
+| `faillock` | Real failed unlocks at the lock screen | `intruder`, with toast and Telegram | Yes |
+| `usb` | Real device insertion, and a coldplug burst at boot | `benign` and `unattended` | Yes |
+| `wake` | Real wake of an idle, locked machine | `benign` for real; `intruder` by simulation | Yes |
+| `boot` | Real power-on at the greeter | `benign` for real; `unattended` by config override | Yes |
+| `manual` | On demand | All verdict paths | Yes |
+
+Also exercised end to end: the offline spool (alert queued while unreachable,
+delivered on a later boot), the two retention clocks, the toast photo reaching
+the notification server, and the debounce collapsing a concurrent burst into one
+incident.
+
+Not yet exercised: `BOOT_GRACE_SECONDS` suppressing a coldplug burst — nothing
+has been attached at boot since that landed.
+
 ## Known limitations
 
 - Detection, not prevention. It records an intruder; it does not stop one.
