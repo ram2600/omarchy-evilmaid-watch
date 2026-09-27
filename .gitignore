@@ -8,3 +8,11 @@ __pycache__/
 *.png
 !docs/media/*.png
 !docs/media/*.jpg
+
+# Video belongs on the GitHub release, not in the repository. A phone recording
+# is tens of megabytes and git keeps it forever, in every clone, even after a
+# later commit deletes it.
+*.mp4
+*.mov
+*.mkv
+*.webm
