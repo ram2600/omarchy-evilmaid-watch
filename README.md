@@ -19,8 +19,9 @@ Thirty seconds, filmed on a phone: a locked laptop is opened, the camera fires
 three seconds later, and when nobody unlocks it the alert arrives carrying the
 photograph.
 
-<!-- Upload docs/media demo mp4 to the v0.1.0 release, then paste that URL here -->
-https://github.com/ram2600/omarchy-evilmaid-watch/releases/download/v0.1.0/emw-demo.mp4
+
+https://github.com/user-attachments/assets/ea21117e-ac65-4d87-9654-26c0ea400747
+
 
 | | |
 |---|---|
