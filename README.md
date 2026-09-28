@@ -15,17 +15,24 @@ Built and tested on an Apple Silicon MacBook Air running Asahi/Omarchy.
 
 ## Demo
 
-<!-- Replace with the release-hosted mp4 URL once uploaded -->
-https://github.com/ram2600/omarchy-evilmaid-watch/releases/download/v0.1.0/demo.mp4
+Thirty seconds, filmed on a phone: a locked laptop is opened, the camera fires
+three seconds later, and when nobody unlocks it the alert arrives carrying the
+photograph.
+
+<!-- Upload docs/media demo mp4 to the v0.1.0 release, then paste that URL here -->
+https://github.com/ram2600/omarchy-evilmaid-watch/releases/download/v0.1.0/emw-demo.mp4
 
 | | |
 |---|---|
-| ![Intruder toast with photo](docs/media/toast-intruder.png) | ![Telegram alert](docs/media/telegram-alert.png) |
-| The toast: verdict, trigger, and the capture | The same incident on your phone, minutes later or days later if the laptop was offline |
+| ![A locked laptop is opened](docs/media/lid-open.png) | ![The camera LED lights](docs/media/led-capture.png) |
+| Someone opens a laptop that is locked | The LED lights about three seconds later — the photo is taken *before* anything decides whether it was you |
 
-![Incident detail](docs/media/omarchy-emw-show.png)
+![The intruder alert, carrying the captured photo](docs/media/toast-intruder.png)
 
----
+Nobody unlocked it inside the grace window, so the incident escalated. The toast
+carries the verdict, every trigger that fired — here the lid, the resume and a
+failed unlock all collapsed into one incident — and the capture itself. The same
+alert goes to your phone.
 
 ## Threat model
 
