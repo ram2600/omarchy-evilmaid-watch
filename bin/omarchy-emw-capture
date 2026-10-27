@@ -79,10 +79,20 @@ select_camera() {
 }
 
 if [[ $device == "auto" || -z $device ]]; then
-  if ! device=$(select_camera); then
-    echo "no capture-capable camera found" >&2
-    exit 69
-  fi
+  # At power-on the boot trigger can run before the camera driver has
+  # registered its /dev/video node, so a missing camera is retried for a short
+  # while rather than failing the capture outright. Any later trigger finds it
+  # on the first pass and never waits.
+  camera_wait=$(conf_get CAMERA_WAIT_SECONDS 15)
+  [[ $camera_wait =~ ^[0-9]+$ ]] || camera_wait=15
+  deadline=$(($(date +%s) + camera_wait))
+  until device=$(select_camera); do
+    if (($(date +%s) >= deadline)); then
+      echo "no capture-capable camera found (waited ${camera_wait}s)" >&2
+      exit 69
+    fi
+    sleep 1
+  done
 fi
 
 if [[ ! -c $device ]]; then

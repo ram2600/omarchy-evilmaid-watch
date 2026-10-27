@@ -92,6 +92,10 @@ CAPTURE_PHOTO=true
 # Never hardcode /dev/video1: /dev/video0 on this machine is "avd", an Apple
 # video decoder, and capturing from it will not produce a photo.
 CAMERA_DEVICE=auto
+
+# How long CAMERA_DEVICE=auto waits for a camera to appear before giving up.
+# Only matters at power-on, when the boot trigger can beat the camera driver.
+CAMERA_WAIT_SECONDS=15
 PHOTO_RESOLUTION=1280x720
 
 # Frames to discard before keeping one. The first frames are black until
