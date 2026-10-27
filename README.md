@@ -284,6 +284,7 @@ Every option, what it does, and why it defaults that way:
 |---|---|---|---|
 | `CAPTURE_PHOTO` | `true` | Whether to photograph at all | The evidence is the point, but the incident record still works without it |
 | `CAMERA_DEVICE` | `auto` | Which V4L2 device to use | Never hardcode `/dev/video0`: on Apple silicon that is a video decoder, not a camera, and capturing from it produces nothing. `auto` picks the first real capture device |
+| `CAMERA_WAIT_SECONDS` | `15` | How long `auto` waits for a camera to appear | At power-on the boot trigger can run before the camera driver registers its device node; any later trigger finds it immediately |
 | `PHOTO_RESOLUTION` | `1280x720` | Capture resolution | Big enough to identify a face, small enough to send over a phone connection |
 | `PHOTO_WARMUP_FRAMES` | `15` | Frames discarded before keeping one | The first frames are black until auto-exposure settles |
 
